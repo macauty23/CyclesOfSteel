@@ -25,6 +25,7 @@ interface TechTreeBoardConfig {
   initialFocusedNodeId?: WeaponTechNodeId;
   onFocusChange?: (nodeId: WeaponTechNodeId) => void;
   onNodeActivated?: (nodeId: WeaponTechNodeId) => void;
+  onNodeAlternateActivated?: (nodeId: WeaponTechNodeId) => void;
 }
 
 export class TechTreeBoard {
@@ -34,6 +35,7 @@ export class TechTreeBoard {
   private readonly lineGraphics: Phaser.GameObjects.Graphics;
   private readonly onFocusChange?: (nodeId: WeaponTechNodeId) => void;
   private readonly onNodeActivated?: (nodeId: WeaponTechNodeId) => void;
+  private readonly onNodeAlternateActivated?: (nodeId: WeaponTechNodeId) => void;
   private readonly techNodeCards = new Map<WeaponTechNodeId, TechNodeCardHandle>();
 
   private focusedTechNodeId: WeaponTechNodeId;
@@ -45,12 +47,14 @@ export class TechTreeBoard {
       y = 0,
       initialFocusedNodeId = "armingSword",
       onFocusChange,
-      onNodeActivated
+      onNodeActivated,
+      onNodeAlternateActivated
     } = config;
 
     this.scene = scene;
     this.onFocusChange = onFocusChange;
     this.onNodeActivated = onNodeActivated;
+    this.onNodeAlternateActivated = onNodeAlternateActivated;
     this.focusedTechNodeId = initialFocusedNodeId;
     this.root = scene.add.container(x, y);
     this.lineGraphics = scene.add.graphics();
@@ -245,9 +249,14 @@ export class TechTreeBoard {
 
       root.setScale(0.98);
     });
-    background.on("pointerup", () => {
+    background.on("pointerup", (pointer: Phaser.Input.Pointer) => {
       root.setScale(1.03);
       this.setFocusedNodeId(definition.id);
+
+      if (pointer.button === 2) {
+        this.onNodeAlternateActivated?.(definition.id);
+        return;
+      }
 
       if (!locked) {
         this.onNodeActivated?.(definition.id);

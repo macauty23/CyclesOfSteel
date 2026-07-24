@@ -88,6 +88,30 @@ export const RUN_MODIFIERS: Record<RunModifierId, RunModifierDefinition> = {
     summary: "Better edge reach and wider cuts.",
     detail: "+10 sweep width, +8 heavy range.",
     accent: 0xc69a62
+  },
+  heavyPact: {
+    id: "heavyPact",
+    category: "commitment",
+    name: "Heavy Pact",
+    summary: "Heavy attacks are free. Light attacks are weakened.",
+    detail: "Heavy attacks cost no stamina, but light attacks deal about half damage.",
+    accent: 0xb56f5b
+  },
+  arcaneDebt: {
+    id: "arcaneDebt",
+    category: "control",
+    name: "Arcane Debt",
+    summary: "No more sword upgrades. Enchantments are free.",
+    detail: "Tech tree unlocks are sealed for the rest of the run, but enchantment rolls cost nothing.",
+    accent: 0x8e79b7
+  },
+  glassTempo: {
+    id: "glassTempo",
+    category: "tempo",
+    name: "Glass Tempo",
+    summary: "Faster attacks, less forgiveness.",
+    detail: "Both attacks cycle faster, but incoming damage rises.",
+    accent: 0x70a9a8
   }
 };
 
@@ -102,8 +126,13 @@ export const RUN_MODIFIER_ORDER: RunModifierId[] = [
   "footworkDrill",
   "bindStudy",
   "breathingCadence",
-  "cuttingForms"
+  "cuttingForms",
+  "heavyPact",
+  "arcaneDebt",
+  "glassTempo"
 ];
+
+export const DRAMATIC_RUN_MODIFIER_IDS: RunModifierId[] = ["heavyPact", "arcaneDebt", "glassTempo"];
 
 export function applyRunModifierToStats(stats: CombatStats, modifierId: RunModifierId): void {
   switch (modifierId) {
@@ -163,5 +192,18 @@ export function applyRunModifierToStats(stats: CombatStats, modifierId: RunModif
         }
       }
       stats.heavyAttack.range += 8;
+      return;
+    case "heavyPact":
+      stats.heavyAttack.staminaCost = 0;
+      stats.lightAttack.damage = Math.max(1, Math.round(stats.lightAttack.damage * 0.55));
+      return;
+    case "arcaneDebt":
+      return;
+    case "glassTempo":
+      stats.lightAttack.windup = Math.max(40, Math.round(stats.lightAttack.windup * 0.88));
+      stats.heavyAttack.windup = Math.max(56, Math.round(stats.heavyAttack.windup * 0.88));
+      stats.lightAttack.recovery = Math.max(44, Math.round(stats.lightAttack.recovery * 0.9));
+      stats.heavyAttack.recovery = Math.max(54, Math.round(stats.heavyAttack.recovery * 0.9));
+      stats.incomingDamageScale *= 1.12;
   }
 }

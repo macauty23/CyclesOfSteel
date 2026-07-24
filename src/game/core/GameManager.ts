@@ -8,6 +8,7 @@ import {
 import { cloneMaterials, createEmptyMaterials, materialCostEntries } from "../data/materials";
 import { RELICS, applyRelicToStats } from "../data/relics";
 import {
+  DRAMATIC_RUN_MODIFIER_IDS,
   RUN_MODIFIERS,
   RUN_MODIFIER_ORDER,
   applyRunModifierToStats
@@ -26,6 +27,7 @@ import {
   getNextAnchorRegion,
   resolveWorldEncounter
 } from "../data/worldMap";
+import { getBossDefinition, isSecretBossId } from "../data/bosses";
 import {
   WEAPON_TECH_ORDER,
   WEAPON_TECH_TREE,
@@ -41,6 +43,7 @@ import type {
   EnchantmentId,
   ForgeOfferDefinition,
   ForgeOfferId,
+  LegendarySwordId,
   MaterialCost,
   MaterialId,
   MaterialInventory,
@@ -93,6 +96,7 @@ function createDefaultRunState(): RunState {
 
   return {
     selectedSwordId: "armingSword",
+    legendarySwordOverrideId: null,
     materials,
     encounter: 1,
     unlockedTechNodeIds: ["armingSword"],
@@ -181,16 +185,28 @@ export class GameManager {
   private worldDepthCursor = 0;
   private testModeEnabled = false;
   private testModeUnlocked = false;
+  private immortalModeEnabled = false;
   private thaiModeEnabled = false;
   private tutorialMode = false;
   private tutorialCompleted = false;
   private seenTutorialPromptIds = new Set<string>();
   private pendingSystemMessage: string | null = null;
+  private defeatedBossClearFlags = new Set<string>();
+  private unlockedLegendarySwordIds = new Set<LegendarySwordId>();
+  private currentEncounterTookDamage = false;
+  private excaliburAscensionReady = false;
+  private longswordBlessedFlawlessStreak = 0;
+  private rareEventSpawnedThisRun = false;
 
   reset(): void {
     this.runState = createDefaultRunState();
     this.currentSceneKey = SCENE_KEYS.MainMenu;
+    this.immortalModeEnabled = false;
     this.tutorialMode = false;
+    this.currentEncounterTookDamage = false;
+    this.excaliburAscensionReady = false;
+    this.longswordBlessedFlawlessStreak = 0;
+    this.rareEventSpawnedThisRun = false;
     this.seenTutorialPromptIds.clear();
     this.resetWorldGraph();
   }
@@ -218,6 +234,10 @@ export class GameManager {
     return this.testModeUnlocked;
   }
 
+  isImmortalModeEnabled(): boolean {
+    return this.testModeEnabled && this.immortalModeEnabled;
+  }
+
   isThaiModeEnabled(): boolean {
     return this.thaiModeEnabled;
   }
@@ -233,17 +253,68 @@ export class GameManager {
 
   setTestModeEnabled(enabled: boolean): void {
     this.testModeEnabled = enabled;
+
+    if (!enabled) {
+      this.immortalModeEnabled = false;
+    }
   }
 
   toggleTestModeEnabled(): boolean {
     this.testModeEnabled = !this.testModeEnabled;
+
+    if (!this.testModeEnabled) {
+      this.immortalModeEnabled = false;
+    }
+
     return this.testModeEnabled;
+  }
+
+  toggleImmortalModeEnabled(): boolean {
+    if (!this.testModeEnabled) {
+      this.immortalModeEnabled = false;
+      return false;
+    }
+
+    this.immortalModeEnabled = !this.immortalModeEnabled;
+    return this.immortalModeEnabled;
   }
 
   consumePendingSystemMessage(): string | null {
     const message = this.pendingSystemMessage;
     this.pendingSystemMessage = null;
     return message;
+  }
+
+  hasBossClearFlag(flagId: string): boolean {
+    return this.defeatedBossClearFlags.has(flagId);
+  }
+
+  isLegendarySwordUnlocked(swordId: LegendarySwordId): boolean {
+    return this.unlockedLegendarySwordIds.has(swordId);
+  }
+
+  getBaseSelectedSwordId(): SwordId {
+    return this.runState.selectedSwordId;
+  }
+
+  getLegendarySwordOverrideId(): LegendarySwordId | null {
+    return this.runState.legendarySwordOverrideId;
+  }
+
+  getExcaliburAscensionState(): {
+    unlocked: boolean;
+    ready: boolean;
+    flawlessStreak: number;
+    honoredCleared: boolean;
+    onEligibleLeaf: boolean;
+  } {
+    return {
+      unlocked: this.isLegendarySwordUnlocked("excalibur"),
+      ready: this.excaliburAscensionReady,
+      flawlessStreak: this.longswordBlessedFlawlessStreak,
+      honoredCleared: this.hasBossClearFlag("boss:honored"),
+      onEligibleLeaf: this.isCurrentSwordEligibleForExcaliburAscension()
+    };
   }
 
   isTutorialMode(): boolean {
@@ -267,7 +338,8 @@ export class GameManager {
   }
 
   getSelectedSword(): SwordDefinition {
-    return SWORD_DEFINITIONS[this.runState.selectedSwordId] ?? SWORD_DEFINITIONS.armingSword;
+    const swordId = this.runState.legendarySwordOverrideId ?? this.runState.selectedSwordId;
+    return SWORD_DEFINITIONS[swordId] ?? SWORD_DEFINITIONS.armingSword;
   }
 
   getCombatStyle(): SwordDefinition {
@@ -411,6 +483,10 @@ export class GameManager {
       return false;
     }
 
+    if (this.hasOwnedRunModifier("arcaneDebt")) {
+      return false;
+    }
+
     if (!node.prerequisiteIds.every((prerequisiteId) => this.isWeaponTechUnlocked(prerequisiteId))) {
       return false;
     }
@@ -503,7 +579,13 @@ export class GameManager {
       onHitBurnDamage: 0,
       onHitBurnDurationMs: 0,
       onHitSlowFactor: 1,
-      onHitSlowDurationMs: 0
+      onHitSlowDurationMs: 0,
+      perfectBindStaminaRestoreBonus: 0,
+      dashPassDamageBonus: 0,
+      dashPassBuffDurationMs: 0,
+      stillnessChargeMs: 0,
+      stillnessMaxStacks: 0,
+      stillnessDamagePerStack: 0
     };
 
     for (const nodeId of this.runState.unlockedTechNodeIds) {
@@ -548,7 +630,7 @@ export class GameManager {
     stats.lightAttack.active = Math.max(56, stats.lightAttack.active);
     stats.heavyAttack.active = Math.max(62, stats.heavyAttack.active);
     stats.parryReflectRatio = Math.min(0.95, stats.parryReflectRatio);
-    stats.incomingDamageScale = Phaser.Math.Clamp(stats.incomingDamageScale, 0.55, 1);
+    stats.incomingDamageScale = Phaser.Math.Clamp(stats.incomingDamageScale, 0.55, 1.35);
     stats.onHitSlowFactor = Phaser.Math.Clamp(stats.onHitSlowFactor, 0.42, 1);
 
     return stats;
@@ -619,6 +701,10 @@ export class GameManager {
       return false;
     }
 
+    if (this.runState.ownedModifierIds.includes(modifierId)) {
+      return false;
+    }
+
     if (!this.testModeEnabled && this.runState.claimedModifierId) {
       return false;
     }
@@ -638,6 +724,10 @@ export class GameManager {
   }
 
   canRollEnchantments(): boolean {
+    if (this.hasOwnedRunModifier("arcaneDebt")) {
+      return true;
+    }
+
     return this.canAfford({ essence: 2 });
   }
 
@@ -658,7 +748,9 @@ export class GameManager {
   }
 
   rollEnchantmentOffers(): boolean {
-    if (!this.canRollEnchantments() || !this.spendMaterials({ essence: 2 })) {
+    const freeRoll = this.hasOwnedRunModifier("arcaneDebt");
+
+    if (!this.canRollEnchantments() || (!freeRoll && !this.spendMaterials({ essence: 2 }))) {
       return false;
     }
 
@@ -738,14 +830,14 @@ export class GameManager {
     return this.runState.availableNodeIds.includes(nodeId);
   }
 
-  startWorldNode(scene: Phaser.Scene, nodeId: string): boolean {
+  startWorldNode(scene: Phaser.Scene, nodeId: string, force = false): boolean {
     const node = this.getWorldNodeDefinition(nodeId);
 
-    if (!node || !this.canTravelToWorldNode(nodeId)) {
+    if (!node || (!force && !this.canTravelToWorldNode(nodeId))) {
       return false;
     }
 
-    if (node.type === "battle" || node.type === "miniboss") {
+    if (node.type === "battle" || node.type === "miniboss" || node.type === "boss" || node.type === "challenge") {
       this.runState.currentEncounterNodeId = nodeId;
       this.transition(scene, SCENE_KEYS.Game);
       return true;
@@ -763,7 +855,7 @@ export class GameManager {
 
     this.addMaterials(node.rewardMaterials);
 
-    if (node.type === "relic" && node.relicId && !this.runState.ownedRelicIds.includes(node.relicId)) {
+    if (node.relicId && !this.runState.ownedRelicIds.includes(node.relicId)) {
       this.runState.ownedRelicIds.push(node.relicId);
     }
 
@@ -777,6 +869,43 @@ export class GameManager {
     }
 
     this.addMaterials(reward);
+    this.advanceWorldFrontier(nodeId);
+    return true;
+  }
+
+  resolveRunEvent(
+    nodeId: string,
+    payment: MaterialCost,
+    reward: MaterialCost,
+    modifierId?: RunModifierId,
+    upgradeSwordId?: LegendarySwordId
+  ): boolean {
+    if (upgradeSwordId && !this.canUpgradeCurrentSwordToLegendary(upgradeSwordId)) {
+      return false;
+    }
+
+    if (!this.canTravelToWorldNode(nodeId) || !this.spendMaterials(payment)) {
+      return false;
+    }
+
+    const node = this.getWorldNodeDefinition(nodeId);
+
+    if (!node) {
+      return false;
+    }
+
+    this.addMaterials(node.rewardMaterials);
+    this.addMaterials(reward);
+
+    if (modifierId && !this.runState.ownedModifierIds.includes(modifierId)) {
+      this.runState.ownedModifierIds.push(modifierId);
+      this.runState.activeModifierId = modifierId;
+    }
+
+    if (upgradeSwordId) {
+      this.upgradeCurrentSwordToLegendary(upgradeSwordId);
+    }
+
     this.advanceWorldFrontier(nodeId);
     return true;
   }
@@ -798,6 +927,10 @@ export class GameManager {
     this.runState = createDefaultRunState();
     this.runState.selectedSwordId = swordId;
     this.tutorialMode = false;
+    this.currentEncounterTookDamage = false;
+    this.excaliburAscensionReady = false;
+    this.longswordBlessedFlawlessStreak = 0;
+    this.rareEventSpawnedThisRun = false;
     this.seenTutorialPromptIds.clear();
     this.resetWorldGraph();
     this.spawnWorldChapter("plains");
@@ -808,6 +941,10 @@ export class GameManager {
     this.runState = createDefaultRunState();
     this.runState.selectedSwordId = "armingSword";
     this.tutorialMode = true;
+    this.currentEncounterTookDamage = false;
+    this.excaliburAscensionReady = false;
+    this.longswordBlessedFlawlessStreak = 0;
+    this.rareEventSpawnedThisRun = false;
     this.seenTutorialPromptIds.clear();
     this.resetWorldGraph();
     this.registerWorldChapter(createTutorialChapter(this.worldDepthCursor));
@@ -854,6 +991,80 @@ export class GameManager {
     this.transition(scene, SCENE_KEYS.WorldMap);
   }
 
+  recordEncounterStart(): void {
+    this.currentEncounterTookDamage = false;
+  }
+
+  recordPlayerDamaged(): void {
+    this.currentEncounterTookDamage = true;
+  }
+
+  recordEncounterVictory(): void {
+    const node = this.getCurrentEncounterNodeDefinition();
+
+    if (!node || this.tutorialMode) {
+      return;
+    }
+
+    const honoredCleared = this.hasBossClearFlag("boss:honored") || node.bossId === "honored";
+
+    const qualifiesForLongswordTrial =
+      this.runState.selectedSwordId === "longsword" &&
+      this.runState.currentEnchantmentId === "blessed" &&
+      !this.currentEncounterTookDamage;
+
+    if (qualifiesForLongswordTrial) {
+      this.longswordBlessedFlawlessStreak += 1;
+    } else {
+      this.longswordBlessedFlawlessStreak = 0;
+    }
+
+    if (
+      !this.isLegendarySwordUnlocked("excalibur") &&
+      !this.excaliburAscensionReady &&
+      this.longswordBlessedFlawlessStreak >= 10 &&
+      honoredCleared
+    ) {
+      this.excaliburAscensionReady = true;
+      this.queueSystemMessage("A holy answer stirs in the longsword line.");
+    }
+  }
+
+  canAscendLongswordToExcalibur(): boolean {
+    return (
+      !this.isLegendarySwordUnlocked("excalibur") &&
+      this.excaliburAscensionReady &&
+      this.hasBossClearFlag("boss:honored") &&
+      this.isCurrentSwordEligibleForExcaliburAscension()
+    );
+  }
+
+  ascendLongswordToExcalibur(): boolean {
+    if (!this.canAscendLongswordToExcalibur()) {
+      return false;
+    }
+
+    this.unlockedLegendarySwordIds.add("excalibur");
+    this.runState.legendarySwordOverrideId = "excalibur";
+    this.excaliburAscensionReady = false;
+    this.queueSystemMessage("Excalibur answered the ascent.");
+    return true;
+  }
+
+  canUpgradeCurrentSwordToLegendary(swordId: LegendarySwordId): boolean {
+    return this.isLegendarySwordUnlocked(swordId) && this.runState.legendarySwordOverrideId !== swordId;
+  }
+
+  upgradeCurrentSwordToLegendary(swordId: LegendarySwordId): boolean {
+    if (!this.canUpgradeCurrentSwordToLegendary(swordId)) {
+      return false;
+    }
+
+    this.runState.legendarySwordOverrideId = swordId;
+    this.queueSystemMessage(`${SWORD_DEFINITIONS[swordId].name} takes the line.`);
+    return true;
+  }
+
   private ensureWorldGraph(): void {
     if (this.visibleWorldNodeIds.length > 0 && (this.runState.availableNodeIds.length > 0 || this.tutorialMode)) {
       return;
@@ -886,7 +1097,9 @@ export class GameManager {
       startRegionId,
       nodeOrdinal: this.worldNodeOrdinal,
       startWorldDepth: this.worldDepthCursor,
-      ownedRelicIds: this.runState.ownedRelicIds
+      ownedRelicIds: this.runState.ownedRelicIds,
+      allowRareEvent: !this.rareEventSpawnedThisRun,
+      allowSwordInTheStone: this.isLegendarySwordUnlocked("excalibur") && this.runState.legendarySwordOverrideId !== "excalibur"
     });
     this.registerWorldChapter(chapter);
   }
@@ -901,6 +1114,7 @@ export class GameManager {
     this.runState.availableNodeIds = [...chapter.startNodeIds];
     this.worldNodeOrdinal = chapter.nextNodeOrdinal;
     this.worldDepthCursor = chapter.nextWorldDepth;
+    this.rareEventSpawnedThisRun ||= chapter.spawnedRareEvent ?? false;
   }
 
   private completeCurrentEncounterNode(): void {
@@ -912,14 +1126,34 @@ export class GameManager {
 
     const node = this.worldNodes[nodeId];
 
-    if (!this.tutorialMode && node?.type === "miniboss" && !this.testModeUnlocked) {
+    if (!this.tutorialMode && (node?.type === "miniboss" || node?.type === "boss") && !this.testModeUnlocked) {
       this.testModeUnlocked = true;
-      this.pendingSystemMessage = `Test Mode password unlocked: ${TEST_MODE_PASSWORD}`;
+      this.queueSystemMessage(`Test Mode password unlocked: ${TEST_MODE_PASSWORD}`);
+    }
+
+    if (node?.type === "boss" && node.bossId) {
+      const bossDefinition = getBossDefinition(node.bossId);
+      const clearFlagId = bossDefinition.clearFlagId ?? `boss:${node.bossId}`;
+
+      if (!this.defeatedBossClearFlags.has(clearFlagId)) {
+        this.defeatedBossClearFlags.add(clearFlagId);
+        this.queueSystemMessage(
+          isSecretBossId(node.bossId) ? `Secret boss logged: ${node.title} defeated.` : `${bossDefinition.name} remembered.`
+        );
+      }
+    }
+
+    if (node?.relicId && !this.runState.ownedRelicIds.includes(node.relicId)) {
+      this.runState.ownedRelicIds.push(node.relicId);
     }
 
     this.runState.currentEncounterNodeId = null;
     this.runState.encounter += 1;
     this.advanceWorldFrontier(nodeId);
+  }
+
+  private queueSystemMessage(message: string): void {
+    this.pendingSystemMessage = this.pendingSystemMessage ? `${this.pendingSystemMessage}\n${message}` : message;
   }
 
   private advanceWorldFrontier(nodeId: string): void {
@@ -946,7 +1180,9 @@ export class GameManager {
         startRegionId: nextRegionId,
         nodeOrdinal: this.worldNodeOrdinal,
         startWorldDepth: this.worldDepthCursor,
-        ownedRelicIds: this.runState.ownedRelicIds
+        ownedRelicIds: this.runState.ownedRelicIds,
+        allowRareEvent: !this.rareEventSpawnedThisRun,
+        allowSwordInTheStone: this.isLegendarySwordUnlocked("excalibur") && this.runState.legendarySwordOverrideId !== "excalibur"
       });
       node.nextNodeIds = [...chapter.startNodeIds];
       this.registerWorldChapter(chapter);
@@ -973,7 +1209,41 @@ export class GameManager {
   }
 
   private rollRunModifiers(): RunModifierId[] {
-    return shuffleArray(RUN_MODIFIER_ORDER).slice(0, 3);
+    const owned = new Set(this.runState.ownedModifierIds);
+    const dramaticPool = DRAMATIC_RUN_MODIFIER_IDS.filter((modifierId) => !owned.has(modifierId));
+    const standardPool = RUN_MODIFIER_ORDER.filter((modifierId) => !owned.has(modifierId) && !DRAMATIC_RUN_MODIFIER_IDS.includes(modifierId));
+    const picks: RunModifierId[] = [];
+
+    if (dramaticPool.length > 0 && Math.random() < 0.34) {
+      const dramaticPick = shuffleArray(dramaticPool)[0];
+
+      if (dramaticPick) {
+        picks.push(dramaticPick);
+      }
+    }
+
+    for (const modifierId of shuffleArray([...standardPool, ...dramaticPool])) {
+      if (picks.length >= 3 || picks.includes(modifierId)) {
+        continue;
+      }
+
+      picks.push(modifierId);
+    }
+
+    return picks.slice(0, 3);
+  }
+
+  private isCurrentSwordEligibleForExcaliburAscension(): boolean {
+    const selectedNode = this.getUnlockedWeaponTechDefinitions().find((definition) => definition.swordId === this.runState.selectedSwordId);
+
+    if (!selectedNode || !this.isWeaponTechUnlocked("longsword")) {
+      return false;
+    }
+
+    const descendantChain = getWeaponTechChain(selectedNode.id);
+    const descendsFromLongsword = descendantChain.includes("longsword") && selectedNode.id !== "longsword";
+    const childCount = getWeaponTechChildren(selectedNode.id).length;
+    return descendsFromLongsword && childCount === 0;
   }
 }
 

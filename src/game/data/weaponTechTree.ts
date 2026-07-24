@@ -488,8 +488,8 @@ export const WEAPON_TECH_TREE: Record<WeaponTechNodeId, WeaponTechDefinition> = 
     position: { x: 1260, y: 120 },
     bonuses: {
       moveSpeed: 12,
-      thrustDamage: 5,
-      thrustRange: 16,
+      thrustDamage: 6,
+      thrustRange: 18,
       thrustWindupScale: 0.92
     }
   },
@@ -509,7 +509,7 @@ export const WEAPON_TECH_TREE: Record<WeaponTechNodeId, WeaponTechDefinition> = 
       parryWindow: 18,
       parryCooldown: -70,
       dashCooldown: -30,
-      thrustLunge: 22
+      thrustLunge: 26
     }
   },
   mastersRapier: {
@@ -530,7 +530,7 @@ export const WEAPON_TECH_TREE: Record<WeaponTechNodeId, WeaponTechDefinition> = 
       parryReflectRatio: 0.15,
       parryStunMs: 120,
       parryRecovery: -40,
-      thrustRecoveryScale: 0.9
+      thrustRecoveryScale: 0.88
     }
   },
   needleblade: {
@@ -547,7 +547,7 @@ export const WEAPON_TECH_TREE: Record<WeaponTechNodeId, WeaponTechDefinition> = 
     position: { x: 1800, y: -60 },
     bonuses: {
       moveSpeed: 8,
-      thrustDamage: 4,
+      thrustDamage: 5,
       thrustRange: 10,
       thrustWindupScale: 0.9,
       thrustRecoveryScale: 0.9
@@ -569,7 +569,7 @@ export const WEAPON_TECH_TREE: Record<WeaponTechNodeId, WeaponTechDefinition> = 
       parryWindow: 16,
       parryRecovery: -30,
       parryCooldown: -40,
-      heavyDamage: 4
+      heavyDamage: 5
     }
   },
   estoc: {

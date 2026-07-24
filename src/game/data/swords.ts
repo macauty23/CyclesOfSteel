@@ -101,6 +101,7 @@ function inferAffinity(id: SwordId): SwordAffinity {
     case "montante":
     case "warArmingSword":
     case "longsword":
+    case "excalibur":
     case "greatsword":
     case "zweihander":
     case "flamberge":
@@ -852,6 +853,84 @@ const longsword = forgeSword(warArmingSword, {
     postBindThrustRangeBonus: 18,
     postBindThrustDamageBonus: 4,
     lightHitRecoveryScale: 0.88
+  }
+});
+
+const excalibur = forgeSword(longsword, {
+  id: "excalibur",
+  name: "Excalibur",
+  epithet: "Hidden sovereign blade",
+  accent: 0xf0d891,
+  maxHp: 136,
+  summary: "A legendary ascension of the longsword line that rewards perfect binds, sanctifies every sweep, and answers with sovereign mirages.",
+  lightSummary: "Radiant Arc: a broad blessed cut that leaves lingering holy light in its wake.",
+  heavySummary: "Coronation Wheel: a massive holy sweep that punishes armor and opens the lane for divine mirages.",
+  moveSpeed: 188,
+  moveAcceleration: 1480,
+  dashSpeed: 688,
+  dashCooldown: 352,
+  bodyWidth: 40,
+  bodyHeight: 66,
+  bladeLength: 102,
+  bladeWidth: 9,
+  guardSize: 30,
+  dashTrailLength: 74,
+  dashTrailWidth: 18,
+  lightAttack: {
+    name: "Radiant Arc",
+    shape: "sweep",
+    damage: 30,
+    range: 156,
+    width: 76,
+    windup: 84,
+    active: 104,
+    recovery: 120,
+    lunge: 192,
+    commitWeight: 0.4,
+    drift: 0.4,
+    knockback: 354,
+    tint: 0xf5e5ab
+  },
+  heavyAttack: {
+    name: "Coronation Wheel",
+    shape: "sweep",
+    damage: 48,
+    range: 188,
+    width: 104,
+    windup: 140,
+    active: 112,
+    recovery: 166,
+    lunge: 228,
+    commitWeight: 0.63,
+    drift: 0.3,
+    knockback: 486,
+    tint: 0xfff0c5
+  },
+  techniques: {
+    identity: "Sovereign holy command.",
+    traitPrimary: "Divinity's Mirages",
+    traitSecondary: "The Holy Trinity",
+    activeAbilityName: "Divinity's Mirages",
+    activeAbilityCooldownMs: 30000,
+    healOnPerfectBind: 5,
+    heavyArmorPierceRatio: 0.25,
+    mirageBaseCount: 2,
+    mirageComboStep: 3,
+    mirageMaxCount: 8,
+    mirageDamage: 4,
+    mirageSpeed: 980,
+    mirageHitLimit: 2,
+    mirageSpawnDelayMs: 50,
+    mirageTimeoutMs: 1600,
+    holyGroundDurationMs: 950,
+    holyGroundTickMs: 180,
+    holyGroundDamagePerTick: 2,
+    holyGroundRadiusLight: 42,
+    holyGroundRadiusHeavy: 56,
+    holyTrinityEvery: 3,
+    holyTrinityDamageMultiplier: 3,
+    holyTrinityExplosionRadius: 52,
+    holyTrinityExplosionDamage: 6
   }
 });
 
@@ -2773,6 +2852,7 @@ const BASE_SWORD_DEFINITIONS: Record<SwordId, SwordDefinition> = {
   mastersMontante,
   warArmingSword,
   longsword,
+  excalibur,
   greatsword,
   zweihander,
   flamberge,
@@ -2901,6 +2981,7 @@ const FINAL_SWORD_TUNING: Record<SwordId, SwordOverrides> = {
       measureBonusDamage: 1
     }
   },
+  excalibur: {},
   greatsword: {
     maxHp: 136,
     heavyAttack: {

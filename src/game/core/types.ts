@@ -4,6 +4,7 @@ export type SwordId =
   | "montante"
   | "warArmingSword"
   | "longsword"
+  | "excalibur"
   | "greatsword"
   | "zweihander"
   | "flamberge"
@@ -48,8 +49,21 @@ export type AttackClass = "standard" | "cleave" | "lunge";
 export type AttackDelivery = "melee" | "ranged";
 export type EnemyPattern = "stalker" | "orbiter" | "crusher";
 export type EnemyArmorTier = "unarmored" | "light" | "heavy";
-export type EnemySpecialId = "trapper" | "snarePatch" | "burstShot" | "packFrenzy" | "sidestepBurst" | "rushdown";
+export type EnemySpecialId =
+  | "trapper"
+  | "snarePatch"
+  | "burstShot"
+  | "packFrenzy"
+  | "sidestepBurst"
+  | "rushdown"
+  | "guardedShot"
+  | "hexFervor";
 export type EnemyHazardKind = "bearTrap" | "snarePatch";
+export type BiomeBossId = "apex" | "enflamed" | "honored" | "exalted" | "permafrost";
+export type SecretBossId = "skelecar" | "danu";
+export type BossId = BiomeBossId | SecretBossId;
+export type BossPoolId = "biome" | "secret";
+export type BossArenaThemeId = "coastal" | "volcanic" | "temperate" | "sacred" | "cold" | "secret";
 export type ForgeTab = "offers" | "modifiers" | "enchantments" | "trinkets";
 export type BuildCategoryId = "tempo" | "space" | "commitment" | "control" | "stamina";
 export type SwordAffinity = "balanced" | "measure" | "war" | "edge" | "rogue" | "antiArmor";
@@ -125,7 +139,11 @@ export type RegionId =
   | "sunkenRuins"
   | "crystalValley"
   | "skyIslands";
-export type WorldNodeType = "battle" | "miniboss" | "event" | "merchant" | "relic";
+export type WorldNodeType = "battle" | "miniboss" | "boss" | "event" | "merchant" | "relic" | "challenge";
+export type LegendarySwordId = "excalibur";
+export type EliteTitleId = "swift" | "ironclad" | "duelist" | "frenzied" | "warden";
+export type ShrineChallengeId = "poisonVow" | "noDash" | "heavyOnly";
+export type ArenaEnvironmentId = "icePatches" | "lavaVents" | "fogBank" | "narrowCorridor";
 export type EnchantmentId =
   | "flame"
   | "frost"
@@ -137,7 +155,17 @@ export type RelicId =
   | "greenwayCompass"
   | "sanctumLens"
   | "coastlineCharm"
-  | "starfallDiadem";
+  | "starfallDiadem"
+  | "apexTooth"
+  | "seraphHalo"
+  | "duelistRibbon"
+  | "exaltedCore"
+  | "permafrostToken"
+  | "blueSocket"
+  | "approvalStamp"
+  | "sunlitBrand"
+  | "oathglassSeal"
+  | "celerityCurse";
 export type SwordPartId = "blade" | "crossGuard" | "pommel" | "hilt" | "tip";
 export type SwordPartOptionId = string;
 export type WeaponTechNodeId =
@@ -212,7 +240,10 @@ export type RunModifierId =
   | "footworkDrill"
   | "bindStudy"
   | "breathingCadence"
-  | "cuttingForms";
+  | "cuttingForms"
+  | "heavyPact"
+  | "arcaneDebt"
+  | "glassTempo";
 
 export interface HitImpactProfile {
   displacement: number;
@@ -261,6 +292,8 @@ export interface SwordTechniqueProfile {
   identity: string;
   traitPrimary: string;
   traitSecondary: string;
+  activeAbilityName?: string;
+  activeAbilityCooldownMs?: number;
   parryWindowMultiplier?: number;
   perfectBindWindowMultiplier?: number;
   missRecoveryScale?: number;
@@ -311,6 +344,7 @@ export interface SwordTechniqueProfile {
   criticalChanceBonus?: number;
   criticalDamageMultiplier?: number;
   armorPierceRatio?: number;
+  heavyArmorPierceRatio?: number;
   bonusDamageVsPolearm?: number;
   bonusDamageVsLightArmor?: number;
   postBindGuardDamageScale?: number;
@@ -320,6 +354,23 @@ export interface SwordTechniqueProfile {
   dashStaminaCostModifier?: number;
   measureBonusDamage?: number;
   bindImpactMultiplier?: number;
+  mirageBaseCount?: number;
+  mirageComboStep?: number;
+  mirageMaxCount?: number;
+  mirageDamage?: number;
+  mirageSpeed?: number;
+  mirageHitLimit?: number;
+  mirageSpawnDelayMs?: number;
+  mirageTimeoutMs?: number;
+  holyGroundDurationMs?: number;
+  holyGroundTickMs?: number;
+  holyGroundDamagePerTick?: number;
+  holyGroundRadiusLight?: number;
+  holyGroundRadiusHeavy?: number;
+  holyTrinityEvery?: number;
+  holyTrinityDamageMultiplier?: number;
+  holyTrinityExplosionRadius?: number;
+  holyTrinityExplosionDamage?: number;
 }
 
 export interface MaterialInventory {
@@ -457,6 +508,41 @@ export interface RegionDefinition {
   edge: number;
 }
 
+export interface BossDefinition {
+  id: BossId;
+  pool: BossPoolId;
+  name: string;
+  typeName: string;
+  epithet: string;
+  biome: BossArenaThemeId;
+  summary: string;
+  personality: string;
+  intro: string;
+  lesson: string;
+  coreRule: string;
+  proxyEnemyId: EnemyId;
+  rewardRelicId: RelicId;
+  arenaTitle: string;
+  arenaSubtitle: string;
+  accent: number;
+  fill: number;
+  edge: number;
+  armor: EnemyArmorTier;
+  phaseHp: [number, number];
+  speed: number;
+  acceleration: number;
+  aggression: number;
+  size: number;
+  phaseSpriteKeys?: [string, string];
+  phaseSpriteVisibleHeight?: number;
+  phaseSpriteOrigin?: {
+    x: number;
+    y: number;
+  };
+  clearFlagId?: string;
+  bonusRewardMaterials?: MaterialCost;
+}
+
 export interface EnemyDefinition {
   id: EnemyId;
   name: string;
@@ -489,6 +575,22 @@ export interface EnemyHazardSignal {
   triggerText: string;
 }
 
+export interface EnemyUpdateResult {
+  activatedAttack?: AttackExecutionSignal;
+  endedAttack?: AttackExecutionSignal;
+  spawnedProjectiles?: AttackExecutionSignal[];
+  spawnedHazards?: EnemyHazardSignal[];
+  performedSpecial?: boolean;
+  feedbackText?: string;
+  feedbackColor?: number;
+}
+
+export interface EnemyCombatSnapshot {
+  phase: "idle" | "windup" | "active" | "recovery";
+  isStunned: boolean;
+  slowRemaining: number;
+}
+
 export interface WorldNodeDefinition {
   id: string;
   regionId: RegionId;
@@ -506,7 +608,12 @@ export interface WorldNodeDefinition {
   optional?: boolean;
   hidden?: boolean;
   isBoss?: boolean;
+  bossId?: BossId;
+  eventId?: string;
   relicId?: RelicId;
+  eliteTitleId?: EliteTitleId;
+  challengeId?: ShrineChallengeId;
+  arenaEnvironmentId?: ArenaEnvironmentId;
 }
 
 export interface EnchantmentDefinition {
@@ -526,6 +633,8 @@ export interface RelicDefinition {
   detail: string;
   accent: number;
   regionId: RegionId;
+  sourceBossId?: BossId;
+  isCursed?: boolean;
 }
 
 export interface SwordPartStatAdjustments {
@@ -587,6 +696,7 @@ export interface SwordPartOptionDefinition {
 
 export interface RunState {
   selectedSwordId: SwordId;
+  legendarySwordOverrideId: LegendarySwordId | null;
   materials: MaterialInventory;
   encounter: number;
   unlockedTechNodeIds: WeaponTechNodeId[];
@@ -643,6 +753,12 @@ export interface CombatStats {
   onHitBurnDurationMs: number;
   onHitSlowFactor: number;
   onHitSlowDurationMs: number;
+  perfectBindStaminaRestoreBonus: number;
+  dashPassDamageBonus: number;
+  dashPassBuffDurationMs: number;
+  stillnessChargeMs: number;
+  stillnessMaxStacks: number;
+  stillnessDamagePerStack: number;
 }
 
 export interface EncounterConfig {
@@ -652,6 +768,21 @@ export interface EncounterConfig {
   regionId: RegionId;
   regionName: string;
   nodeType: WorldNodeType;
+  bossId?: BossId;
+  bossName?: string;
+  bossIntro?: string;
+  bossLesson?: string;
+  bossCoreRule?: string;
+  bossRewardRelicId?: RelicId;
+  bossPhaseHp?: [number, number];
+  rewardRelicId?: RelicId;
+  eliteTitleId?: EliteTitleId;
+  eliteTitleName?: string;
+  challengeId?: ShrineChallengeId;
+  challengeName?: string;
+  challengeRuleText?: string;
+  arenaEnvironmentId?: ArenaEnvironmentId;
+  arenaEnvironmentName?: string;
   enemyRoster: string[];
   armor: EnemyArmorTier;
   enemyHp: number;

@@ -42,6 +42,8 @@ export interface EnemyUpdateResult {
   spawnedProjectiles?: AttackExecutionSignal[];
   spawnedHazards?: EnemyHazardSignal[];
   performedSpecial?: boolean;
+  feedbackText?: string;
+  feedbackColor?: number;
 }
 
 export interface EnemyCombatSnapshot {
@@ -96,6 +98,9 @@ export class PlaceholderEnemy {
   private bleedRemaining = 0;
   private bleedTickRemaining = 0;
   private bleedDamage = 0;
+  private guardRemaining = 0;
+  private fervorRemaining = 0;
+  private kiteFrenzyCharge = 0;
   private specialCooldownRemaining = 2200;
   private frenzyActive = false;
   private weaponForwardOffset = 0;
@@ -224,6 +229,8 @@ export class PlaceholderEnemy {
     this.stunRemaining = Math.max(0, this.stunRemaining - deltaMs);
     this.falterRemaining = Math.max(0, this.falterRemaining - deltaMs);
     this.hesitationRemaining = Math.max(0, this.hesitationRemaining - deltaMs);
+    this.guardRemaining = Math.max(0, this.guardRemaining - deltaMs);
+    this.fervorRemaining = Math.max(0, this.fervorRemaining - deltaMs);
     this.slowRemaining = Math.max(0, this.slowRemaining - deltaMs);
     this.bleedRemaining = Math.max(0, this.bleedRemaining - deltaMs);
     this.bleedTickRemaining = Math.max(0, this.bleedTickRemaining - deltaMs);
@@ -283,9 +290,22 @@ export class PlaceholderEnemy {
     const distance = Math.max(0.001, toTarget.length());
     const normalized = toTarget.scale(1 / distance);
     this.facing.copy(normalized);
+    let frenzyFeedbackText: string | null = null;
 
-    if (!this.frenzyActive && this.hasSpecial("packFrenzy") && this.hp <= this.maxHp * 0.45) {
-      this.triggerPackFrenzy();
+    if (!this.frenzyActive && this.hasSpecial("packFrenzy")) {
+      if (this.hp <= this.maxHp * 0.45) {
+        this.triggerPackFrenzy();
+        frenzyFeedbackText = "The beast gives in to frenzy.";
+      } else if (this.definition.visualStyle === "beast" && distance > this.heavyAttack.range * 0.96) {
+        this.kiteFrenzyCharge += deltaMs;
+
+        if (this.kiteFrenzyCharge >= 1200) {
+          this.triggerPackFrenzy();
+          frenzyFeedbackText = "Ignoring it only makes the beast angrier.";
+        }
+      } else {
+        this.kiteFrenzyCharge = Math.max(0, this.kiteFrenzyCharge - deltaMs * 0.8);
+      }
     }
 
     const events = this.updateAttackTimers(deltaMs);
@@ -293,6 +313,11 @@ export class PlaceholderEnemy {
     const mergedEvents: EnemyUpdateResult = {
       ...events
     };
+
+    if (frenzyFeedbackText) {
+      mergedEvents.feedbackText = frenzyFeedbackText;
+      mergedEvents.feedbackColor = 0xe0ae98;
+    }
 
     if (!this.currentAttack) {
       const specialEvents = this.tryUseSpecial(distance, normalized, targetX, targetY, targetState);
@@ -651,7 +676,7 @@ export class PlaceholderEnemy {
 
     if (this.currentAttack.phase === "windup") {
       this.currentAttack.phase = "active";
-      this.currentAttack.remaining = this.currentAttack.signal.profile.active;
+      this.currentAttack.remaining = Math.max(64, Math.round(this.currentAttack.signal.profile.active * this.getAttackTempoScale()));
 
       if (this.currentAttack.signal.profile.delivery !== "ranged") {
         this.bodyObject.body.setVelocity(
@@ -675,7 +700,7 @@ export class PlaceholderEnemy {
 
     if (this.currentAttack.phase === "active") {
       this.currentAttack.phase = "recovery";
-      this.currentAttack.remaining = this.currentAttack.signal.profile.recovery;
+      this.currentAttack.remaining = Math.max(84, Math.round(this.currentAttack.signal.profile.recovery * this.getAttackTempoScale()));
 
       return {
         endedAttack: this.currentAttack.signal
@@ -721,6 +746,11 @@ export class PlaceholderEnemy {
     const orbit = new Phaser.Math.Vector2(-normalized.y * this.strafeDirection, normalized.x * this.strafeDirection);
     const rangedThreat = this.heavyAttack.delivery === "ranged" || this.lightAttack.delivery === "ranged";
     const beast = this.definition.visualStyle === "beast";
+    const guardian = this.definition.visualStyle === "guardian";
+    const raider = this.definition.visualStyle === "raider";
+    const polearm = this.definition.visualStyle === "polearm";
+    const caster = this.definition.visualStyle === "caster";
+    const brute = this.definition.visualStyle === "brute";
 
     if (beast) {
       if (targetState.isParrying && distance > this.lightAttack.range * 0.64) {
@@ -735,6 +765,56 @@ export class PlaceholderEnemy {
       } else {
         desired.copy(normalized).scale(0.78);
         desired.add(orbit.clone().scale(0.26));
+      }
+    } else if (guardian) {
+      if (distance > preferredRange + 36) {
+        desired.copy(normalized).scale(0.74);
+        desired.add(orbit.clone().scale(0.08));
+      } else if (targetState.isAttacking && distance < preferredRange + 18) {
+        desired.copy(normalized).negate().scale(0.54);
+        desired.add(orbit.clone().scale(0.18));
+      } else {
+        desired.copy(orbit).scale(0.26);
+        desired.add(normalized.clone().scale(0.16));
+      }
+    } else if (polearm) {
+      if (distance < preferredRange - 28) {
+        desired.copy(normalized).negate().scale(0.96);
+        desired.add(orbit.clone().scale(0.32));
+      } else if (distance > preferredRange + 52) {
+        desired.copy(normalized).scale(0.84);
+        desired.add(orbit.clone().scale(0.12));
+      } else {
+        desired.copy(orbit).scale(0.82);
+        desired.add(normalized.clone().scale(-0.08));
+      }
+    } else if (caster) {
+      if (distance < preferredRange - 32 || targetState.isAttacking) {
+        desired.copy(normalized).negate().scale(1.02);
+        desired.add(orbit.clone().scale(0.36));
+      } else {
+        desired.copy(orbit).scale(0.92);
+        desired.add(normalized.clone().scale(-0.12));
+      }
+    } else if (raider) {
+      if (distance > preferredRange + 22) {
+        desired.copy(normalized).scale(0.92);
+        desired.add(orbit.clone().scale(0.22));
+      } else if (distance < preferredRange - 18 || targetState.isAttacking) {
+        desired.copy(normalized).negate().scale(0.82);
+        desired.add(orbit.clone().scale(0.44));
+      } else {
+        desired.copy(orbit).scale(1.02);
+      }
+    } else if (brute) {
+      if (distance > preferredRange + 28) {
+        desired.copy(normalized).scale(1.02);
+      } else if (distance < preferredRange - 20) {
+        desired.copy(normalized).negate().scale(0.22);
+        desired.add(orbit.clone().scale(0.16));
+      } else {
+        desired.copy(normalized).scale(0.42);
+        desired.add(orbit.clone().scale(0.12));
       }
     } else if (targetState.isParrying && distance < preferredRange + 24) {
       desired.copy(normalized).negate().scale(rangedThreat ? 0.9 : 0.72);
@@ -774,6 +854,10 @@ export class PlaceholderEnemy {
 
   private shouldAttack(distance: number, targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean }): boolean {
     const beast = this.definition.visualStyle === "beast";
+    const guardian = this.definition.visualStyle === "guardian";
+    const polearm = this.definition.visualStyle === "polearm";
+    const caster = this.definition.visualStyle === "caster";
+    const brute = this.definition.visualStyle === "brute";
 
     if (this.falterRemaining > 0 || this.hesitationRemaining > 0) {
       return false;
@@ -791,12 +875,36 @@ export class PlaceholderEnemy {
       return distance <= this.heavyAttack.range * 0.98;
     }
 
+    if (guardian) {
+      if (targetState.isDashing && distance > this.lightAttack.range * 0.5) {
+        return false;
+      }
+
+      return distance <= this.heavyAttack.range * 0.82;
+    }
+
+    if (polearm) {
+      if (distance < this.lightAttack.range * 0.4) {
+        return false;
+      }
+
+      return distance <= this.heavyAttack.range * 0.94;
+    }
+
     if (this.heavyAttack.delivery === "ranged") {
       if (targetState.isParrying && distance > this.lightAttack.range * 0.52) {
         return false;
       }
 
+      if (caster && targetState.isAttacking && distance < this.heavyAttack.range * 0.7) {
+        return false;
+      }
+
       return distance >= this.lightAttack.range * 0.42 && distance <= this.heavyAttack.range * 0.96;
+    }
+
+    if (brute && distance <= this.heavyAttack.range * 0.9) {
+      return true;
     }
 
     if (targetState.isParrying && distance > this.lightAttack.range * 0.46) {
@@ -819,6 +927,10 @@ export class PlaceholderEnemy {
     const rangedHeavy = this.heavyAttack.delivery === "ranged";
     const meleeLight = this.lightAttack.delivery !== "ranged";
     const beast = this.definition.visualStyle === "beast";
+    const guardian = this.definition.visualStyle === "guardian";
+    const polearm = this.definition.visualStyle === "polearm";
+    const raider = this.definition.visualStyle === "raider";
+    const brute = this.definition.visualStyle === "brute";
     const aggression = this.getAggressionValue();
 
     if (!beast && Math.random() < 0.26) {
@@ -835,6 +947,25 @@ export class PlaceholderEnemy {
       if (close && Math.random() < 0.4) {
         sequence.push("light");
       }
+    } else if (guardian) {
+      sequence.push(targetState.isAttacking || !close ? "heavy" : "light");
+      if (close) {
+        sequence.push("heavy");
+      }
+    } else if (polearm) {
+      sequence.push(close ? "light" : "heavy");
+      if (!close || Math.random() < 0.4) {
+        sequence.push("heavy");
+      }
+    } else if (raider) {
+      sequence.push("light");
+      sequence.push(close ? "light" : "heavy");
+      if (!targetState.isParrying && Math.random() < 0.5) {
+        sequence.push("heavy");
+      }
+    } else if (brute) {
+      sequence.push(close ? "heavy" : "light");
+      sequence.push("heavy");
     } else if (rangedHeavy && !close) {
       sequence.push("heavy");
       if (meleeLight && Math.random() < 0.35) {
@@ -889,7 +1020,7 @@ export class PlaceholderEnemy {
         angle: direction.angle()
       },
       phase: "windup",
-      remaining: profile.windup
+      remaining: Math.max(48, Math.round(profile.windup * this.getAttackTempoScale()))
     };
     this.bodyObject.body.setAcceleration(
       direction.x * this.acceleration * (profile.delivery === "ranged" ? 0.06 : 0.18),
@@ -898,6 +1029,18 @@ export class PlaceholderEnemy {
   }
 
   private getPreferredSpacing(): number {
+    if (this.definition.visualStyle === "guardian") {
+      return this.heavyAttack.range * 0.66;
+    }
+
+    if (this.definition.visualStyle === "polearm") {
+      return this.heavyAttack.range * 0.8;
+    }
+
+    if (this.definition.visualStyle === "raider") {
+      return this.lightAttack.range * 0.72;
+    }
+
     if (this.heavyAttack.delivery === "ranged") {
       return this.heavyAttack.range * 0.82;
     }
@@ -922,15 +1065,20 @@ export class PlaceholderEnemy {
   }
 
   private getAggressionValue(): number {
-    return this.frenzyActive ? Math.min(1, this.aggression + 0.16) : this.aggression;
+    const value = this.frenzyActive ? this.aggression + 0.16 : this.fervorRemaining > 0 ? this.aggression + 0.08 : this.aggression;
+    return Math.min(1, value);
   }
 
   private getMoveSpeedMultiplier(): number {
-    return this.frenzyActive ? 1.18 : 1;
+    return this.frenzyActive ? 1.18 : this.fervorRemaining > 0 ? 1.08 : 1;
   }
 
   private getAttackCooldownScale(): number {
-    return this.frenzyActive ? 0.8 : 1;
+    return this.frenzyActive ? 0.8 : this.fervorRemaining > 0 ? 0.88 : 1;
+  }
+
+  private getAttackTempoScale(): number {
+    return this.frenzyActive ? 0.84 : this.fervorRemaining > 0 ? 0.9 : 1;
   }
 
   private triggerPackFrenzy(): void {
@@ -956,6 +1104,45 @@ export class PlaceholderEnemy {
   ): EnemyUpdateResult {
     if (this.specialCooldownRemaining > 0 || this.currentAttack || this.hesitationRemaining > 0 || this.falterRemaining > 0) {
       return {};
+    }
+
+    if (this.hasSpecial("guardedShot") && this.heavyAttack.delivery === "ranged" && distance >= 116 && distance <= 244 && !targetState.isDashing) {
+      this.specialCooldownRemaining = 3900;
+      this.attackCooldownRemaining = 120;
+      this.guardRemaining = 720;
+      this.hesitationRemaining = 90;
+      this.queuedAttacks = ["heavy"];
+      this.bodyObject.body.setVelocity(0, 0);
+      this.scene.tweens.add({
+        targets: [this.bodyObject, this.weaponGuard, this.bodyAccent],
+        alpha: 0.88,
+        duration: 96,
+        yoyo: true
+      });
+      return {
+        performedSpecial: true,
+        feedbackText: "A guarded shot takes shape.",
+        feedbackColor: COLORS.gold
+      };
+    }
+
+    if (this.hasSpecial("hexFervor") && distance >= 104 && distance <= 236) {
+      this.specialCooldownRemaining = 4200;
+      this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, 180);
+      this.hesitationRemaining = 90;
+      this.fervorRemaining = 2400;
+      this.scene.tweens.add({
+        targets: [this.bodyDetail, this.bodyAccent, this.headDetail],
+        alpha: 0.9,
+        duration: 90,
+        yoyo: true,
+        repeat: 1
+      });
+      return {
+        performedSpecial: true,
+        feedbackText: "A hex quickens the next exchange.",
+        feedbackColor: 0xb8e08c
+      };
     }
 
     if (this.hasSpecial("trapper") && !targetState.isDashing && distance >= 92 && distance <= 228) {
@@ -1243,8 +1430,12 @@ export class PlaceholderEnemy {
     const poseTarget = this.getAttackPoseTarget();
     const bodyColor = stunned
       ? 0xe0cb97
+      : this.guardRemaining > 0
+        ? 0xd8d1be
       : this.frenzyActive
         ? 0xe0ae98
+      : this.fervorRemaining > 0
+        ? 0xc0d8b4
       : faltering
         ? 0xccb29c
         : this.slowRemaining > 0
@@ -1254,11 +1445,15 @@ export class PlaceholderEnemy {
             : this.baseColor;
     const strokeColor = stunned
       ? COLORS.gold
+      : this.guardRemaining > 0
+        ? 0xf1dd9b
       : telegraphing
         ? 0xf0c68a
-        : this.frenzyActive
-          ? 0xf1b47d
-          : this.slowRemaining > 0
+      : this.frenzyActive
+        ? 0xf1b47d
+        : this.fervorRemaining > 0
+          ? 0xcfe7a8
+        : this.slowRemaining > 0
             ? 0xb8d7f2
             : COLORS.ghost;
     const headOffset = this.definition.visualStyle === "beast" ? this.size * 0.18 : this.size * 0.1;
@@ -1267,12 +1462,16 @@ export class PlaceholderEnemy {
     const accentColor =
       stunned
         ? 0xf3ddb2
+        : this.guardRemaining > 0
+          ? 0xf0e2b9
         : telegraphing
           ? 0xf0c68a
           : this.definition.visualStyle === "caster"
             ? 0xe8efe3
             : this.frenzyActive
               ? 0xffcfaf
+              : this.fervorRemaining > 0
+                ? 0xd6ecb8
               : this.gearColor;
     const accentPose = this.getAccentPose();
     const mouthLift = beast ? -this.size * 0.06 : 0;
@@ -1372,24 +1571,42 @@ export class PlaceholderEnemy {
       return false;
     }
 
-    this.hp = Math.max(0, this.hp - amount);
+    const guarding = this.guardRemaining > 0;
+    const effectiveDamage = Math.max(1, Math.round(amount * (guarding ? 0.68 : 1)));
+    const effectiveImpact: HitImpactProfile = guarding
+      ? {
+          displacement: Math.round(impact.displacement * 0.62),
+          controlLossMs: Math.round(impact.controlLossMs * 0.72),
+          interruptChance: impact.interruptChance * 0.35,
+          hitstopMs: impact.hitstopMs,
+          cameraShake: impact.cameraShake
+        }
+      : impact;
 
-    const shouldInterrupt = interrupt && Math.random() <= impact.interruptChance;
-    this.falterRemaining = Math.max(this.falterRemaining, impact.controlLossMs);
-    this.hesitationRemaining = Math.max(this.hesitationRemaining, impact.controlLossMs * 0.35);
+    this.hp = Math.max(0, this.hp - effectiveDamage);
+    if (guarding) {
+      this.guardRemaining = Math.max(0, this.guardRemaining - 180);
+    }
+
+    const shouldInterrupt = interrupt && Math.random() <= effectiveImpact.interruptChance;
+    this.falterRemaining = Math.max(this.falterRemaining, effectiveImpact.controlLossMs);
+    this.hesitationRemaining = Math.max(this.hesitationRemaining, effectiveImpact.controlLossMs * 0.35);
 
     if (shouldInterrupt) {
       this.currentAttack = null;
       this.queuedAttacks = [];
       this.chainGapRemaining = 0;
-      this.attackCooldownRemaining = 320 + Math.round(impact.controlLossMs * 0.4);
+      this.attackCooldownRemaining = 320 + Math.round(effectiveImpact.controlLossMs * 0.4);
       this.bodyObject.body.setAcceleration(0, 0);
-      this.bodyObject.body.setVelocity(direction.x * impact.displacement, direction.y * impact.displacement);
+      this.bodyObject.body.setVelocity(direction.x * effectiveImpact.displacement, direction.y * effectiveImpact.displacement);
     } else {
-      this.bodyObject.body.setVelocity(direction.x * impact.displacement * 0.42, direction.y * impact.displacement * 0.42);
+      this.bodyObject.body.setVelocity(
+        direction.x * effectiveImpact.displacement * 0.42,
+        direction.y * effectiveImpact.displacement * 0.42
+      );
     }
 
-    this.bodyObject.setFillStyle(flash ? 0xe8a59d : 0xc5645f);
+    this.bodyObject.setFillStyle(guarding ? 0xf0dfae : flash ? 0xe8a59d : 0xc5645f);
     this.scene.tweens.add({
       targets: this.bodyObject,
       scaleX: 0.82 * this.bodyScaleXBase,

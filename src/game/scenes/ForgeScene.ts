@@ -16,6 +16,7 @@ export class ForgeScene extends Phaser.Scene {
   private activeTab: ForgeTab = "offers";
   private readonly tabButtons = new Map<ForgeTab, ButtonHandle>();
   private modificationButton: ButtonHandle | null = null;
+  private immortalButton: ButtonHandle | null = null;
   private continueButton: ButtonHandle | null = null;
   private summaryText!: Phaser.GameObjects.Text;
   private sideDetailTitleText!: Phaser.GameObjects.Text;
@@ -30,6 +31,7 @@ export class ForgeScene extends Phaser.Scene {
   create(): void {
     this.tabButtons.clear();
     this.modificationButton = null;
+    this.immortalButton = null;
     this.continueButton = null;
     this.activeTab = "offers";
 
@@ -47,6 +49,20 @@ export class ForgeScene extends Phaser.Scene {
     this.feedbackText = this.add
       .text(470, 300, "", { ...TEXT.small, color: colorHex(COLORS.gold) })
       .setWordWrapWidth(708);
+
+    if (gameManager.isTestModeEnabled()) {
+      this.immortalButton = createButton({
+        scene: this,
+        x: 1126,
+        y: 300,
+        width: 150,
+        height: 54,
+        label: "Immortal Off",
+        hint: "Ignore combat damage",
+        accent: 0x6c5a2a,
+        onClick: () => this.toggleImmortalMode()
+      });
+    }
 
     this.createTabs();
     this.contentContainer = this.add.container(0, 0);
@@ -191,6 +207,7 @@ export class ForgeScene extends Phaser.Scene {
 
     this.tabButtons.forEach((button, tab) => button.setSelected(tab === this.activeTab));
     this.modificationButton?.setSelected(false);
+    this.refreshImmortalButton();
     if (this.continueButton) {
       const techTreeSeen = gameManager.hasSeenTutorialPrompt(TUTORIAL_PROMPT_IDS.techTree);
       const lockedByTutorial = gameManager.isTutorialMode() && !techTreeSeen;
@@ -198,6 +215,23 @@ export class ForgeScene extends Phaser.Scene {
       this.continueButton.setHint(lockedByTutorial ? "Visit the tech tree first" : "Return to the world map");
     }
     this.rebuildContent();
+  }
+
+  private toggleImmortalMode(): void {
+    const enabled = gameManager.toggleImmortalModeEnabled();
+    this.refreshImmortalButton();
+    this.feedbackText.setText(enabled ? "Immortal mode enabled for test runs." : "Immortal mode disabled.");
+  }
+
+  private refreshImmortalButton(): void {
+    if (!this.immortalButton) {
+      return;
+    }
+
+    const enabled = gameManager.isImmortalModeEnabled();
+    this.immortalButton.setSelected(enabled);
+    this.immortalButton.setText(enabled ? "Immortal On" : "Immortal Off");
+    this.immortalButton.setHint(enabled ? "Combat damage ignored" : "Ignore combat damage");
   }
 
   private rebuildContent(): void {
@@ -307,6 +341,7 @@ export class ForgeScene extends Phaser.Scene {
     const enchantment = gameManager.getCurrentEnchantmentDefinition();
     const pendingBias = gameManager.getPendingEnchantmentBiasDefinition();
     const roster = gameManager.getEnchantmentRoster();
+    const freeRolls = gameManager.hasOwnedRunModifier("arcaneDebt");
 
     this.contentContainer.add(this.add.text(470, 330, "Enchantments", TEXT.heading));
     this.contentContainer.add(
@@ -320,7 +355,9 @@ export class ForgeScene extends Phaser.Scene {
               : `${enchantment.name} is active.`
             : pendingBias
               ? `No enchantment bound. Next roll favors ${pendingBias.name}.`
-              : "No enchantment bound. Buy one random enchantment for 2 Essence.",
+              : freeRolls
+                ? "No enchantment bound. Arcane Debt makes rolls free, but the tech tree is sealed."
+                : "No enchantment bound. Buy one random enchantment for 2 Essence.",
           { ...TEXT.small, color: colorHex(enchantment ? COLORS.success : COLORS.gold) }
         )
         .setWordWrapWidth(700)
@@ -333,7 +370,7 @@ export class ForgeScene extends Phaser.Scene {
       width: 156,
       height: 56,
       label: "Roll",
-      hint: "Cost 2 Essence",
+      hint: freeRolls ? "Free roll" : "Cost 2 Essence",
       accent: 0x59427e,
       onClick: () => this.attemptRollEnchantments()
     });

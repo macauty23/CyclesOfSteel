@@ -33,12 +33,14 @@ export class TechTreeScene extends Phaser.Scene {
   private detailText!: Phaser.GameObjects.Text;
   private feedbackText!: Phaser.GameObjects.Text;
   private tutorialOverlay: GuidedOverlayHandle | null = null;
+  private legendaryPromptOverlay: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super(SCENE_KEYS.TechTree);
   }
 
   create(): void {
+    this.input.mouse?.disableContextMenu();
     const unlockedNodes = gameManager.getUnlockedWeaponTechDefinitions();
     this.focusedTechNodeId = unlockedNodes.length > 0 ? unlockedNodes[unlockedNodes.length - 1].id : "armingSword";
 
@@ -49,7 +51,8 @@ export class TechTreeScene extends Phaser.Scene {
         this.focusedTechNodeId = nodeId;
         this.refreshView();
       },
-      onNodeActivated: (nodeId) => this.attemptUnlockTechNode(nodeId)
+      onNodeActivated: (nodeId) => this.attemptUnlockTechNode(nodeId),
+      onNodeAlternateActivated: (nodeId) => this.handleAlternateNodeActivation(nodeId)
     });
 
     this.dragBounds = this.createWorldBackdrop();
@@ -192,6 +195,12 @@ export class TechTreeScene extends Phaser.Scene {
 
   private bindShortcuts(): void {
     this.input.keyboard?.on("keydown-ESC", () => {
+      if (this.legendaryPromptOverlay) {
+        this.legendaryPromptOverlay.destroy();
+        this.legendaryPromptOverlay = null;
+        return;
+      }
+
       if (this.tutorialOverlay) {
         return;
       }
@@ -220,9 +229,16 @@ export class TechTreeScene extends Phaser.Scene {
     const node = WEAPON_TECH_TREE[nodeId];
     const blockingNode = gameManager.getWeaponTechBlockingNode(nodeId);
     const prerequisitesMet = node.prerequisiteIds.every((prerequisiteId) => gameManager.isWeaponTechUnlocked(prerequisiteId));
+    const arcaneDebtActive = gameManager.hasOwnedRunModifier("arcaneDebt");
 
     if (gameManager.isWeaponTechUnlocked(nodeId)) {
       this.feedbackText.setText(`${node.name} already forged.`);
+      this.refreshView();
+      return;
+    }
+
+    if (arcaneDebtActive) {
+      this.feedbackText.setText("Arcane Debt seals the tech tree for this run.");
       this.refreshView();
       return;
     }
@@ -248,6 +264,35 @@ export class TechTreeScene extends Phaser.Scene {
     this.refreshView();
   }
 
+  private handleAlternateNodeActivation(nodeId: WeaponTechNodeId): void {
+    if (nodeId !== "longsword") {
+      this.feedbackText.setText("Only the Longsword holds a hidden ascension.");
+      this.refreshView();
+      return;
+    }
+
+    if (gameManager.canAscendLongswordToExcalibur()) {
+      this.openExcaliburPrompt();
+      return;
+    }
+
+    const ascension = gameManager.getExcaliburAscensionState();
+
+    if (ascension.unlocked) {
+      this.feedbackText.setText("Excalibur is already unlocked. Watch for The Sword In The Stone.");
+    } else if (!ascension.honoredCleared) {
+      this.feedbackText.setText("Defeat The Honored at least once to wake this ascension.");
+    } else if (!ascension.ready) {
+      this.feedbackText.setText(`Need 10 flawless Blessed Longsword wins. Current streak: ${ascension.flawlessStreak}/10.`);
+    } else if (!ascension.onEligibleLeaf) {
+      this.feedbackText.setText("Ascension is ready, but you must stand on a finished Longsword branch leaf first.");
+    } else {
+      this.feedbackText.setText("The longsword line is not ready to ascend yet.");
+    }
+
+    this.refreshView();
+  }
+
   private refreshView(): void {
     const state = gameManager.getState();
     const stats = gameManager.getCombatStats();
@@ -255,10 +300,14 @@ export class TechTreeScene extends Phaser.Scene {
     const blockingNode = gameManager.getWeaponTechBlockingNode(focusedNode.id);
     const prerequisitesMet = focusedNode.prerequisiteIds.every((prerequisiteId) => state.unlockedTechNodeIds.includes(prerequisiteId));
     const unlocked = state.unlockedTechNodeIds.includes(focusedNode.id);
+    const arcaneDebtActive = gameManager.hasOwnedRunModifier("arcaneDebt");
     const available = !unlocked && !blockingNode && prerequisitesMet;
     const affordable = available && gameManager.canAfford(focusedNode.cost);
+    const excalibur = gameManager.getExcaliburAscensionState();
     const status = unlocked
       ? "Forged"
+      : arcaneDebtActive
+        ? "Sealed by Arcane Debt"
       : blockingNode
         ? `Sealed by ${blockingNode.shortName}`
         : available
@@ -280,7 +329,29 @@ export class TechTreeScene extends Phaser.Scene {
     this.detailTitleText.setText(focusedNode.name);
     this.fitDetailTitle(this.detailTitleText, 284, 54);
     this.detailText.setY(346 + this.detailTitleText.height);
-    this.detailText.setText([status, focusedNode.summary, focusedNode.detail].join("\n\n"));
+    this.detailText.setText(
+      [
+        status,
+        focusedNode.summary,
+        focusedNode.detail,
+        focusedNode.id === "longsword"
+          ? [
+              "Hidden Ascension",
+              excalibur.unlocked
+                ? "Excalibur unlocked. A rare Sword In The Stone event can now upgrade future runs."
+                : `Flawless Blessed Longsword streak: ${excalibur.flawlessStreak}/10`,
+              excalibur.honoredCleared ? "The Honored has been defeated." : "Defeat The Honored once to qualify.",
+              excalibur.ready
+                ? excalibur.onEligibleLeaf
+                  ? "Right-click Longsword to ascend."
+                  : "Ascension is ready. Reach a finished Longsword branch leaf, then right-click Longsword."
+                : "Ascension remains dormant."
+            ].join("\n")
+          : ""
+      ]
+        .filter((entry) => entry.length > 0)
+        .join("\n\n")
+    );
     this.techTreeBoard.setFocusedNodeId(this.focusedTechNodeId);
     this.techTreeBoard.refresh();
   }
@@ -336,5 +407,78 @@ export class TechTreeScene extends Phaser.Scene {
         this.feedbackText.setText("Pan the tree, inspect a node, then return to the forge when you are ready.");
       }
     });
+  }
+
+  private openExcaliburPrompt(): void {
+    this.legendaryPromptOverlay?.destroy();
+
+    const veil = this.add
+      .rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, VIEWPORT.width, VIEWPORT.height, 0x060a10, 0.72)
+      .setScrollFactor(0);
+    const panel = this.add
+      .rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, 500, 280, COLORS.panel, 0.98)
+      .setStrokeStyle(2, COLORS.gold, 0.92)
+      .setScrollFactor(0);
+    const title = this.add.text(VIEWPORT.width * 0.5, 252, "Ascend To Excalibur?", TEXT.heading).setOrigin(0.5).setScrollFactor(0);
+    const copy = this.add
+      .text(
+        VIEWPORT.width * 0.5,
+        314,
+        "Would you like to ascend to Excalibur?\nThis upgrades the current run's sword into the hidden legendary blade.",
+        { ...TEXT.small, align: "center", color: colorHex(COLORS.subtext) }
+      )
+      .setOrigin(0.5)
+      .setWordWrapWidth(404)
+      .setScrollFactor(0);
+
+    const container = this.add.container(0, 0, [veil, panel, title, copy]);
+    container.setDepth(40).setScrollFactor(0);
+    [veil, panel, title, copy].forEach((entry) => entry.setDepth(40));
+
+    const closePrompt = (): void => {
+      container.destroy();
+      this.legendaryPromptOverlay = null;
+    };
+
+    const yesButton = createButton({
+      scene: this,
+      x: VIEWPORT.width * 0.5 - 92,
+      y: 434,
+      width: 160,
+      height: 62,
+      label: "Ascend",
+      hint: "Accept the legendary upgrade",
+      accent: 0x6a5b2b,
+      scrollFactor: 0,
+      onClick: () => {
+        if (gameManager.ascendLongswordToExcalibur()) {
+          this.feedbackText.setText("Excalibur ascended from the longsword line.");
+        } else {
+          this.feedbackText.setText("The ascension failed to answer.");
+        }
+
+        closePrompt();
+        this.refreshView();
+      }
+    });
+    yesButton.root.setDepth(41);
+    container.add(yesButton.root);
+
+    const noButton = createButton({
+      scene: this,
+      x: VIEWPORT.width * 0.5 + 92,
+      y: 434,
+      width: 160,
+      height: 62,
+      label: "Wait",
+      hint: "Keep the current blade for now",
+      accent: 0x394554,
+      scrollFactor: 0,
+      onClick: closePrompt
+    });
+    noButton.root.setDepth(41);
+    container.add(noButton.root);
+
+    this.legendaryPromptOverlay = container;
   }
 }

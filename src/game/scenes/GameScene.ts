@@ -6,6 +6,7 @@ import type {
   AttackKind,
   AttackProfile,
   AttackShape,
+  CombatStatusSnapshot,
   CombatStats,
   EncounterConfig,
   EnemyDefinition,
@@ -16,8 +17,11 @@ import type {
   MaterialCost,
   RunModifierId
 } from "../core/types";
+import { getBossDefinition, getBossSpriteAssets } from "../data/bosses";
 import { getEnemyDefinition } from "../data/enemies";
 import { MATERIAL_ORDER, MATERIAL_TINTS, formatMaterialCost } from "../data/materials";
+import { RELICS } from "../data/relics";
+import { BossEnemy } from "../entities/BossEnemy";
 import { MaterialPickup } from "../entities/MaterialPickup";
 import { PlaceholderEnemy } from "../entities/PlaceholderEnemy";
 import { CombatController } from "../systems/CombatController";
@@ -30,6 +34,21 @@ import {
 import { createGuidedOverlay, type GuidedOverlayHandle } from "../ui/createGuidedOverlay";
 import { createButton } from "../ui/createButton";
 import { ARENA, COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
+
+const RAPIER_TEXTURE_KEY = "player-rapier";
+const RAPIER_TEXTURE_URL = new URL("../../../assets/rapier.png", import.meta.url).href;
+const RAPIER_VISIBLE_HEIGHT = 631;
+const RAPIER_TEXTURE_ORIGIN = {
+  x: 0.491,
+  y: 0.669
+} as const;
+const RAPIER_SPRITE_SWORDS = new Set([
+  "rapier",
+  "courtRapier",
+  "mastersRapier",
+  "needleblade",
+  "pappenheimerRapier"
+]);
 
 type PlayerBody = Phaser.GameObjects.Rectangle & {
   body: Phaser.Physics.Arcade.Body;
@@ -54,17 +73,61 @@ interface EnemyHazardState {
   durationRemaining: number;
 }
 
+interface ArenaZone {
+  x: number;
+  y: number;
+  radius: number;
+}
+
+interface HolyMirageState {
+  visual: Phaser.GameObjects.Container;
+  glow: Phaser.GameObjects.Ellipse;
+  direction: Phaser.Math.Vector2;
+  x: number;
+  y: number;
+  speed: number;
+  damage: number;
+  hitsRemaining: number;
+  hitCooldownRemaining: number;
+  timeoutRemaining: number;
+  trailRemaining: number;
+  empowered: boolean;
+}
+
+interface HolyFieldState {
+  visual: Phaser.GameObjects.Container;
+  x: number;
+  y: number;
+  radius: number;
+  damage: number;
+  tickRemaining: number;
+  remaining: number;
+}
+
 export class GameScene extends Phaser.Scene {
   private player!: PlayerBody;
   private playerWeaponBlade!: Phaser.GameObjects.Rectangle;
   private playerWeaponGuard!: Phaser.GameObjects.Rectangle;
-  private enemy!: PlaceholderEnemy;
+  private playerWeaponSprite: Phaser.GameObjects.Image | null = null;
+  private enemy!: PlaceholderEnemy | BossEnemy;
   private controller!: CombatController;
   private currentStats!: CombatStats;
   private currentEncounter!: EncounterConfig;
+  private activeArenaBounds = new Phaser.Geom.Rectangle(ARENA.x, ARENA.y, ARENA.width, ARENA.height);
   private pickups: MaterialPickup[] = [];
   private enemyProjectiles: EnemyProjectileState[] = [];
   private enemyHazards: EnemyHazardState[] = [];
+  private arenaSlipZones: ArenaZone[] = [];
+  private arenaVentZones: ArenaZone[] = [];
+  private arenaVentCycleRemaining = 1500;
+  private arenaVentActiveRemaining = 0;
+  private arenaVentDamageCooldownRemaining = 0;
+  private challengeTickRemaining = 0;
+  private baseEnemyDrag = 1760;
+  private activeAbilityKey: Phaser.Input.Keyboard.Key | null = null;
+  private excaliburAbilityCooldownRemaining = 0;
+  private holyMirages: HolyMirageState[] = [];
+  private holyFields: HolyFieldState[] = [];
 
   private activeAttack: AttackExecutionSignal | null = null;
   private activeAttackVisual: Phaser.GameObjects.Container | null = null;
@@ -94,6 +157,10 @@ export class GameScene extends Phaser.Scene {
   private postBindRewardRemaining = 0;
   private guardDamageScalePending = 1;
   private recentDashAttackWindowRemaining = 0;
+  private dashPassBuffRemaining = 0;
+  private dashPassTriggeredThisDash = false;
+  private stillnessChargeProgress = 0;
+  private stillnessStacks = 0;
   private lastSuccessfulAttackKind: AttackKind | null = null;
   private lastSuccessfulAttackShape: AttackShape | null = null;
   private playerWeaponForwardOffset = 0;
@@ -108,6 +175,11 @@ export class GameScene extends Phaser.Scene {
   private lootText!: Phaser.GameObjects.Text;
   private guidanceText!: Phaser.GameObjects.Text;
   private swordModeText!: Phaser.GameObjects.Text;
+  private bossBarFrame: Phaser.GameObjects.Rectangle | null = null;
+  private bossBarTrack: Phaser.GameObjects.Rectangle | null = null;
+  private bossBarFill: Phaser.GameObjects.Rectangle | null = null;
+  private bossBarLabel: Phaser.GameObjects.Text | null = null;
+  private lastBossPhaseSeen = 0;
   private measureGraphics!: Phaser.GameObjects.Graphics;
   private telegraphGraphics!: Phaser.GameObjects.Graphics;
   private lastFeedback = "";
@@ -118,6 +190,18 @@ export class GameScene extends Phaser.Scene {
 
   constructor() {
     super(SCENE_KEYS.Game);
+  }
+
+  preload(): void {
+    if (!this.textures.exists(RAPIER_TEXTURE_KEY)) {
+      this.load.image(RAPIER_TEXTURE_KEY, RAPIER_TEXTURE_URL);
+    }
+
+    for (const asset of getBossSpriteAssets()) {
+      if (!this.textures.exists(asset.key)) {
+        this.load.image(asset.key, asset.url);
+      }
+    }
   }
 
   create(): void {
@@ -138,6 +222,7 @@ export class GameScene extends Phaser.Scene {
     this.comboTimerRemaining = 0;
     this.bestCombo = 0;
     this.hitStopRemaining = 0;
+    this.excaliburAbilityCooldownRemaining = 0;
     this.firstBloodAvailable = true;
     this.thrustStreak = 0;
     this.nextAttackBonusDamage = 0;
@@ -145,6 +230,10 @@ export class GameScene extends Phaser.Scene {
     this.postBindRewardRemaining = 0;
     this.guardDamageScalePending = 1;
     this.recentDashAttackWindowRemaining = 0;
+    this.dashPassBuffRemaining = 0;
+    this.dashPassTriggeredThisDash = false;
+    this.stillnessChargeProgress = 0;
+    this.stillnessStacks = 0;
     this.lastSuccessfulAttackKind = null;
     this.lastSuccessfulAttackShape = null;
     this.playerWeaponForwardOffset = 0;
@@ -157,26 +246,36 @@ export class GameScene extends Phaser.Scene {
     this.feedbackRemaining = 0;
     this.tutorialOverlay = null;
     this.tutorialOverlayActive = false;
+    this.bossBarFrame = null;
+    this.bossBarTrack = null;
+    this.bossBarFill = null;
+    this.bossBarLabel = null;
+    this.lastBossPhaseSeen = 0;
+    this.holyMirages = [];
+    this.holyFields = [];
 
-    this.currentStats = gameManager.getCombatStats();
     this.currentEncounter = gameManager.getEncounterConfig();
+    this.currentStats = gameManager.getCombatStats();
+    gameManager.recordEncounterStart();
+    this.initializeEncounterModifiers();
     this.enemyProjectiles = [];
     this.enemyHazards = [];
     this.playerMaxHp = this.currentStats.maxHp;
     this.playerHp = this.playerMaxHp;
     this.playerInvulnRemaining = 0;
 
+    this.activeAbilityKey = this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.F) ?? null;
     this.input.mouse?.disableContextMenu();
     this.paintArena();
     this.drawHudChrome();
     this.measureGraphics = this.add.graphics().setDepth(9);
     this.telegraphGraphics = this.add.graphics().setDepth(3);
 
-    this.physics.world.setBounds(ARENA.x, ARENA.y, ARENA.width, ARENA.height);
+    this.physics.world.setBounds(this.activeArenaBounds.x, this.activeArenaBounds.y, this.activeArenaBounds.width, this.activeArenaBounds.height);
 
     const style = this.currentStats.combatStyle;
-    const spawnX = ARENA.x + 112;
-    const spawnY = ARENA.y + ARENA.height / 2;
+    const spawnX = this.activeArenaBounds.x + 112;
+    const spawnY = this.activeArenaBounds.centerY;
     const playerBodySize = Math.min(style.bodyWidth, style.bodyHeight);
 
     this.player = this.add
@@ -191,6 +290,14 @@ export class GameScene extends Phaser.Scene {
       .rectangle(spawnX + 14, spawnY, style.bladeLength, style.bladeWidth, COLORS.ghost, 0.95)
       .setOrigin(0, 0.5)
       .setDepth(7);
+    this.playerWeaponSprite = this.usesRapierSprite()
+      ? this.add
+          .image(spawnX + 10, spawnY, RAPIER_TEXTURE_KEY)
+          .setOrigin(RAPIER_TEXTURE_ORIGIN.x, RAPIER_TEXTURE_ORIGIN.y)
+          .setDepth(7)
+      : null;
+    this.playerWeaponGuard.setVisible(this.playerWeaponSprite === null);
+    this.playerWeaponBlade.setVisible(this.playerWeaponSprite === null);
 
     this.physics.add.existing(this.player);
     this.player.body.setAllowGravity(false);
@@ -198,24 +305,11 @@ export class GameScene extends Phaser.Scene {
     this.player.body.setMaxVelocity(this.currentStats.moveSpeed * 1.5, this.currentStats.moveSpeed * 1.5);
     this.player.body.setCollideWorldBounds(true);
     this.player.body.setSize(Math.max(22, playerBodySize - 8), Math.max(22, playerBodySize - 8), true);
-    this.player.body.setBoundsRectangle(new Phaser.Geom.Rectangle(ARENA.x, ARENA.y, ARENA.width, ARENA.height));
+    this.player.body.setBoundsRectangle(this.activeArenaBounds);
 
-    const enemyDefinition = this.getEncounterEnemyDefinition();
-
-    this.enemy = new PlaceholderEnemy({
-      scene: this,
-      x: ARENA.x + ARENA.width - 146,
-      y: ARENA.y + ARENA.height / 2,
-      maxHp: this.currentEncounter.enemyHp,
-      speed: this.currentEncounter.enemySpeed,
-      acceleration: this.currentEncounter.enemyAcceleration,
-      tint: this.currentEncounter.enemyTint,
-      size: this.currentEncounter.enemySize,
-      pattern: this.currentEncounter.pattern,
-      definition: enemyDefinition,
-      attackDamageBonus: this.currentEncounter.enemyDamageBonus,
-      aggression: this.currentEncounter.enemyAggression
-    });
+    this.enemy = this.createArenaOpponent();
+    this.baseEnemyDrag = this.enemy.bodyObject.body.drag.x;
+    this.enemy.bodyObject.body.setBoundsRectangle(this.activeArenaBounds);
 
     this.physics.add.collider(this.player, this.enemy.bodyObject);
 
@@ -225,7 +319,10 @@ export class GameScene extends Phaser.Scene {
       pointer: this.input.activePointer,
       stats: this.currentStats,
       prepareAttackSignal: (signal) => this.preparePlayerAttackSignal(signal),
-      onActionRejected: () => this.pushFeedback("Not enough stamina", COLORS.danger),
+      canStartDash: () => this.currentEncounter.challengeId !== "noDash",
+      canStartAttack: (kind) => this.currentEncounter.challengeId !== "heavyOnly" || kind === "heavy",
+      onActionRejected: (reason) =>
+        this.pushFeedback(reason === "stamina" ? "Not enough stamina" : this.currentEncounter.challengeRuleText ?? "The shrine seals that action.", COLORS.danger),
       onAttackActive: (signal) => this.openAttackWindow(signal),
       onAttackEnded: (signal) => this.closeAttackWindow(signal),
       onDashStart: (direction) => {
@@ -239,8 +336,9 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5, 0)
       .setDepth(20);
     this.hudText = this.add.text(64, 28, "", TEXT.small).setDepth(20).setWordWrapWidth(310);
+    const guidanceY = this.currentEncounter.bossId ? 128 : 86;
     this.guidanceText = this.add
-      .text(VIEWPORT.width * 0.5, 86, "", { ...TEXT.small, color: colorHex(COLORS.gold), align: "center" })
+      .text(VIEWPORT.width * 0.5, guidanceY, "", { ...TEXT.small, color: colorHex(COLORS.gold), align: "center" })
       .setOrigin(0.5, 0)
       .setDepth(20)
       .setWordWrapWidth(420);
@@ -255,7 +353,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(20)
       .setWordWrapWidth(320);
     this.add
-      .text(64, 640, "Move WASD/Arrows  Dash Shift/Space  Bind Q\nLight J/LMB  Heavy K/RMB", TEXT.small)
+      .text(64, 640, this.getControlHintText(), TEXT.small)
       .setDepth(20)
       .setWordWrapWidth(400);
     this.lootText = this.add
@@ -263,9 +361,15 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(1, 0)
       .setDepth(20)
       .setWordWrapWidth(430);
+    this.createBossBar();
 
     this.refreshHud();
     this.syncPlayerPresentation();
+    if (this.currentEncounter.bossIntro) {
+      this.pushFeedback(this.currentEncounter.bossIntro, COLORS.gold);
+    } else if (this.currentEncounter.challengeRuleText) {
+      this.pushFeedback(this.currentEncounter.challengeRuleText, COLORS.gold);
+    }
     this.maybeOpenTutorialOverlay();
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -286,14 +390,75 @@ export class GameScene extends Phaser.Scene {
       this.enemyAttackVisual?.destroy();
       this.clearEnemyProjectiles();
       this.clearEnemyHazards();
+      this.clearHolyMirages();
+      this.clearHolyFields();
       this.tutorialOverlay?.destroy();
+      this.bossBarFrame?.destroy();
+      this.bossBarTrack?.destroy();
+      this.bossBarFill?.destroy();
+      this.bossBarLabel?.destroy();
+      this.activeAbilityKey = null;
     });
+  }
+
+  private createArenaOpponent(): PlaceholderEnemy | BossEnemy {
+    const spawnX = this.activeArenaBounds.right - 146;
+    const spawnY = this.activeArenaBounds.centerY;
+
+    if (this.currentEncounter.bossId) {
+      return new BossEnemy({
+        scene: this,
+        x: spawnX,
+        y: spawnY,
+        phaseHp: this.currentEncounter.bossPhaseHp ?? [this.currentEncounter.enemyHp, this.currentEncounter.enemyHp],
+        speed: this.currentEncounter.enemySpeed,
+        acceleration: this.currentEncounter.enemyAcceleration,
+        tint: this.currentEncounter.enemyTint,
+        size: this.currentEncounter.enemySize,
+        definition: getBossDefinition(this.currentEncounter.bossId),
+        attackDamageBonus: this.currentEncounter.enemyDamageBonus,
+        aggression: this.currentEncounter.enemyAggression
+      });
+    }
+
+    const enemyDefinition = this.getEncounterEnemyDefinition();
+    return new PlaceholderEnemy({
+      scene: this,
+      x: spawnX,
+      y: spawnY,
+      maxHp: this.currentEncounter.enemyHp,
+      speed: this.currentEncounter.enemySpeed,
+      acceleration: this.currentEncounter.enemyAcceleration,
+      tint: this.currentEncounter.enemyTint,
+      size: this.currentEncounter.enemySize,
+      pattern: this.currentEncounter.pattern,
+      definition: enemyDefinition,
+      attackDamageBonus: this.currentEncounter.enemyDamageBonus,
+      aggression: this.currentEncounter.enemyAggression
+    });
+  }
+
+  private createBossBar(): void {
+    if (!this.currentEncounter.bossId) {
+      return;
+    }
+
+    this.bossBarFrame = this.add
+      .rectangle(VIEWPORT.width * 0.5, 88, 482, 42, COLORS.panel, 0.96)
+      .setStrokeStyle(2, COLORS.panelEdge, 1)
+      .setDepth(19);
+    this.bossBarTrack = this.add.rectangle(VIEWPORT.width * 0.5, 100, 442, 12, 0x111823, 0.96).setDepth(20);
+    this.bossBarFill = this.add.rectangle(VIEWPORT.width * 0.5 - 221, 100, 442, 12, this.currentEncounter.arenaEdge, 0.96).setOrigin(0, 0.5).setDepth(21);
+    this.bossBarLabel = this.add
+      .text(VIEWPORT.width * 0.5, 76, "", { ...TEXT.small, color: "#f2e6c3", align: "center" })
+      .setOrigin(0.5, 0.5)
+      .setDepth(21);
   }
 
   private getEncounterEnemyDefinition(): EnemyDefinition {
     const definition = getEnemyDefinition(this.currentEncounter.enemyId);
 
-    if (this.currentEncounter.nodeType !== "miniboss") {
+    if (this.currentEncounter.nodeType !== "miniboss" && this.currentEncounter.nodeType !== "challenge") {
       return definition;
     }
 
@@ -303,17 +468,23 @@ export class GameScene extends Phaser.Scene {
       case "archer":
         specialIds.add("burstShot");
         specialIds.add("sidestepBurst");
+        specialIds.add("trapper");
+        specialIds.add("guardedShot");
         break;
       case "caster":
         specialIds.add("snarePatch");
         specialIds.add("sidestepBurst");
+        specialIds.add("burstShot");
+        specialIds.add("hexFervor");
         break;
       case "beast":
         specialIds.add("packFrenzy");
         specialIds.add("sidestepBurst");
+        specialIds.add("rushdown");
         break;
       case "polearm":
         specialIds.add("rushdown");
+        specialIds.add("trapper");
         break;
       case "brute":
         specialIds.add("rushdown");
@@ -322,9 +493,11 @@ export class GameScene extends Phaser.Scene {
       case "guardian":
         specialIds.add("rushdown");
         specialIds.add("burstShot");
+        specialIds.add("snarePatch");
         break;
       case "raider":
         specialIds.add("sidestepBurst");
+        specialIds.add("rushdown");
         break;
     }
 
@@ -338,9 +511,130 @@ export class GameScene extends Phaser.Scene {
     };
   }
 
+  private initializeEncounterModifiers(): void {
+    this.activeArenaBounds = new Phaser.Geom.Rectangle(ARENA.x, ARENA.y, ARENA.width, ARENA.height);
+    this.arenaSlipZones = [];
+    this.arenaVentZones = [];
+    this.arenaVentCycleRemaining = 1450;
+    this.arenaVentActiveRemaining = 0;
+    this.arenaVentDamageCooldownRemaining = 0;
+    this.challengeTickRemaining = this.currentEncounter.challengeId === "poisonVow" ? 1100 : 0;
+
+    switch (this.currentEncounter.arenaEnvironmentId) {
+      case "icePatches":
+        this.arenaSlipZones = [
+          { x: ARENA.x + 250, y: ARENA.y + 180, radius: 52 },
+          { x: ARENA.x + ARENA.width * 0.52, y: ARENA.y + ARENA.height * 0.5, radius: 60 },
+          { x: ARENA.x + ARENA.width - 250, y: ARENA.y + ARENA.height - 180, radius: 52 }
+        ];
+        break;
+      case "lavaVents":
+        this.arenaVentZones = [
+          { x: ARENA.x + 250, y: ARENA.y + 178, radius: 40 },
+          { x: ARENA.x + ARENA.width * 0.5, y: ARENA.y + ARENA.height - 174, radius: 42 },
+          { x: ARENA.x + ARENA.width - 250, y: ARENA.y + ARENA.height * 0.5, radius: 38 }
+        ];
+        break;
+      case "narrowCorridor":
+        this.activeArenaBounds = new Phaser.Geom.Rectangle(ARENA.x + 118, ARENA.y + 40, ARENA.width - 236, ARENA.height - 80);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private updateEncounterModifiers(delta: number): void {
+    if (!this.player || !this.enemy || this.combatLocked) {
+      return;
+    }
+
+    this.player.body.setDrag(this.currentStats.drag, this.currentStats.drag);
+    this.enemy.bodyObject.body.setDrag(this.baseEnemyDrag, this.baseEnemyDrag);
+    this.arenaVentDamageCooldownRemaining = Math.max(0, this.arenaVentDamageCooldownRemaining - delta);
+
+    if (this.currentEncounter.challengeId === "poisonVow" && this.playerHp > 0) {
+      this.challengeTickRemaining = Math.max(0, this.challengeTickRemaining - delta);
+
+      if (this.challengeTickRemaining === 0) {
+        this.challengeTickRemaining = 1120;
+        this.damagePlayer(3, { x: 0, y: 0 }, {
+          displacement: 0,
+          controlLossMs: 0,
+          interruptChance: 0,
+          hitstopMs: 0,
+          cameraShake: 0
+        });
+        if (this.playerHp > 0) {
+          this.pushFeedback("Viridian vow bites", 0x8ab864);
+        }
+      }
+    }
+
+    if (this.currentEncounter.arenaEnvironmentId === "icePatches") {
+      const playerOnIce = this.isInsideArenaZone(this.player.x, this.player.y, this.arenaSlipZones);
+      const enemyOnIce = this.isInsideArenaZone(this.enemy.x, this.enemy.y, this.arenaSlipZones);
+
+      if (playerOnIce) {
+        this.player.body.setDrag(this.currentStats.drag * 0.32, this.currentStats.drag * 0.32);
+      }
+
+      if (enemyOnIce) {
+        this.enemy.bodyObject.body.setDrag(this.baseEnemyDrag * 0.4, this.baseEnemyDrag * 0.4);
+      }
+    }
+
+    if (this.currentEncounter.arenaEnvironmentId === "lavaVents") {
+      this.arenaVentCycleRemaining = Math.max(0, this.arenaVentCycleRemaining - delta);
+      this.arenaVentActiveRemaining = Math.max(0, this.arenaVentActiveRemaining - delta);
+
+      if (this.arenaVentActiveRemaining === 0 && this.arenaVentCycleRemaining === 0) {
+        this.arenaVentActiveRemaining = 460;
+        this.arenaVentCycleRemaining = 1720;
+        this.pushFeedback("Lava vents erupt", 0xff9b59);
+      }
+
+      if (this.arenaVentActiveRemaining > 0 && this.arenaVentDamageCooldownRemaining === 0) {
+        const playerInVent = this.isInsideArenaZone(this.player.x, this.player.y, this.arenaVentZones);
+        const enemyInVent = this.isInsideArenaZone(this.enemy.x, this.enemy.y, this.arenaVentZones);
+
+        if (playerInVent) {
+          this.damagePlayer(4, { x: 0, y: -0.2 }, {
+            displacement: 42,
+            controlLossMs: 60,
+            interruptChance: 0.14,
+            hitstopMs: 0,
+            cameraShake: 0.0024
+          });
+        }
+
+        if (enemyInVent && this.enemy.alive) {
+          this.enemy.takeDamage(3, { x: 0, y: -0.2 }, {
+            displacement: 30,
+            controlLossMs: 44,
+            interruptChance: 0.08,
+            hitstopMs: 0,
+            cameraShake: 0
+          });
+        }
+
+        if (playerInVent || enemyInVent) {
+          this.arenaVentDamageCooldownRemaining = 320;
+        }
+      }
+    }
+  }
+
+  private isInsideArenaZone(x: number, y: number, zones: ArenaZone[]): boolean {
+    return zones.some((zone) => Phaser.Math.Distance.Between(x, y, zone.x, zone.y) <= zone.radius);
+  }
+
   update(_time: number, delta: number): void {
     if (this.transitioningOut) {
       return;
+    }
+
+    if (this.excaliburAbilityCooldownRemaining > 0) {
+      this.excaliburAbilityCooldownRemaining = Math.max(0, this.excaliburAbilityCooldownRemaining - delta);
     }
 
     if (this.playerInvulnRemaining > 0) {
@@ -350,7 +644,7 @@ export class GameScene extends Phaser.Scene {
     if (this.feedbackRemaining > 0) {
       this.feedbackRemaining = Math.max(0, this.feedbackRemaining - delta);
 
-    if (this.feedbackRemaining === 0) {
+      if (this.feedbackRemaining === 0) {
         this.lastFeedback = "";
       }
     }
@@ -380,6 +674,10 @@ export class GameScene extends Phaser.Scene {
       this.recentDashAttackWindowRemaining = Math.max(0, this.recentDashAttackWindowRemaining - delta);
     }
 
+    if (this.dashPassBuffRemaining > 0) {
+      this.dashPassBuffRemaining = Math.max(0, this.dashPassBuffRemaining - delta);
+    }
+
     if (this.postBindRewardRemaining > 0) {
       this.postBindRewardRemaining = Math.max(0, this.postBindRewardRemaining - delta);
 
@@ -400,6 +698,8 @@ export class GameScene extends Phaser.Scene {
     if (!this.combatLocked) {
       this.controller.update(delta);
       const playerStatus = this.controller.getStatus();
+      this.updateRelicStates(playerStatus, delta);
+      this.tryUseSwordActiveAbility();
       const enemyEvents = this.enemy.update(
         this.player.x,
         this.player.y,
@@ -423,6 +723,10 @@ export class GameScene extends Phaser.Scene {
         enemyEvents.spawnedHazards.forEach((signal) => this.spawnEnemyHazard(signal));
       }
 
+      if (enemyEvents.feedbackText) {
+        this.pushFeedback(enemyEvents.feedbackText, enemyEvents.feedbackColor ?? COLORS.gold);
+      }
+
       if (enemyEvents.endedAttack) {
         this.closeEnemyAttackWindow();
       }
@@ -431,6 +735,9 @@ export class GameScene extends Phaser.Scene {
       this.updateEnemyAttackWindow();
       this.updateEnemyProjectiles(delta);
       this.updateEnemyHazards(delta);
+      this.updateHolyMirages(delta);
+      this.updateHolyFields(delta);
+      this.updateEncounterModifiers(delta);
     }
 
     this.drawMeasureGuide();
@@ -438,6 +745,538 @@ export class GameScene extends Phaser.Scene {
     this.syncPlayerPresentation();
     this.updatePickups(delta);
     this.refreshHud();
+  }
+
+  private getControlHintText(): string {
+    const activeHint = this.currentStats.sword.techniques.activeAbilityName ? "  Active F" : "";
+    return `Move WASD/Arrows  Dash Shift/Space  Bind Q${activeHint}\nLight J/LMB  Heavy K/RMB`;
+  }
+
+  private updateRelicStates(playerStatus: ReturnType<CombatController["getStatus"]>, delta: number): void {
+    if (this.currentStats.dashPassDamageBonus > 0 && this.currentStats.dashPassBuffDurationMs > 0) {
+      if (!playerStatus.isDashing) {
+        this.dashPassTriggeredThisDash = false;
+      } else if (
+        !this.dashPassTriggeredThisDash &&
+        Phaser.Math.Distance.Between(this.player.x, this.player.y, this.enemy.x, this.enemy.y) <= this.currentEncounter.enemySize * 0.7 + 24
+      ) {
+        this.dashPassTriggeredThisDash = true;
+        this.dashPassBuffRemaining = Math.max(this.dashPassBuffRemaining, this.currentStats.dashPassBuffDurationMs);
+        this.pushFeedback("Apex rush primed", 0x63b7cf);
+      }
+    }
+
+    if (
+      this.currentStats.stillnessChargeMs <= 0 ||
+      this.currentStats.stillnessMaxStacks <= 0 ||
+      this.currentStats.stillnessDamagePerStack <= 0
+    ) {
+      return;
+    }
+
+    const nearlyStill = this.player.body.velocity.lengthSq() <= 196;
+    const calm = nearlyStill && !playerStatus.isAttacking && !playerStatus.isDashing && !playerStatus.isParrying;
+
+    if (!calm) {
+      this.stillnessChargeProgress = 0;
+      return;
+    }
+
+    if (this.stillnessStacks >= this.currentStats.stillnessMaxStacks) {
+      return;
+    }
+
+    this.stillnessChargeProgress += delta;
+
+    while (
+      this.stillnessChargeProgress >= this.currentStats.stillnessChargeMs &&
+      this.stillnessStacks < this.currentStats.stillnessMaxStacks
+    ) {
+      this.stillnessChargeProgress -= this.currentStats.stillnessChargeMs;
+      this.stillnessStacks += 1;
+
+      if (this.stillnessStacks === this.currentStats.stillnessMaxStacks) {
+        this.pushFeedback("Permafrost focus complete", 0xb8e8f8);
+      }
+    }
+  }
+
+  private tryUseSwordActiveAbility(): void {
+    if (!this.activeAbilityKey || !Phaser.Input.Keyboard.JustDown(this.activeAbilityKey)) {
+      return;
+    }
+
+    const techniques = this.currentStats.sword.techniques;
+
+    if (!techniques.activeAbilityName || !techniques.activeAbilityCooldownMs || this.dropsSpawned || !this.enemy.alive) {
+      return;
+    }
+
+    if (this.excaliburAbilityCooldownRemaining > 0) {
+      this.pushFeedback(`${techniques.activeAbilityName} recharging`, 0xd8c283);
+      return;
+    }
+
+    this.activateDivinityMirages();
+  }
+
+  private activateDivinityMirages(): void {
+    const techniques = this.currentStats.sword.techniques;
+    const baseCount = Math.max(2, techniques.mirageBaseCount ?? 2);
+    const comboStep = Math.max(1, techniques.mirageComboStep ?? 3);
+    const maxCount = Math.max(baseCount, techniques.mirageMaxCount ?? baseCount);
+    const hitLimit = Math.max(1, techniques.mirageHitLimit ?? 2);
+    const spawnDelayMs = Math.max(0, techniques.mirageSpawnDelayMs ?? 50);
+    const mirageDamage = Math.max(1, techniques.mirageDamage ?? 4);
+    const holyTrinityEvery = Math.max(1, techniques.holyTrinityEvery ?? 3);
+    const holyTrinityMultiplier = Math.max(1, techniques.holyTrinityDamageMultiplier ?? 3);
+    const mirageCount = Phaser.Math.Clamp(baseCount + Math.floor(this.comboCount / comboStep), baseCount, maxCount);
+    const swordTip = this.getPlayerSwordTip();
+    const abilityName = techniques.activeAbilityName ?? "Divinity's Mirages";
+
+    this.excaliburAbilityCooldownRemaining = techniques.activeAbilityCooldownMs ?? 30000;
+    this.spawnMirageCastFx(swordTip.x, swordTip.y);
+    this.pushFeedback(abilityName, 0xf4dd9d);
+
+    for (let index = 0; index < mirageCount; index += 1) {
+      const empowered = (index + 1) % holyTrinityEvery === 0;
+      const damage = empowered ? Math.max(1, Math.round(mirageDamage * holyTrinityMultiplier)) : mirageDamage;
+
+      this.time.delayedCall(index * spawnDelayMs, () => {
+        if (this.transitioningOut || this.combatLocked || !this.sys.isActive()) {
+          return;
+        }
+
+        const tip = this.getPlayerSwordTip();
+        this.spawnHolyMirage(tip.x, tip.y, damage, hitLimit, empowered);
+      });
+    }
+  }
+
+  private spawnHolyMirage(x: number, y: number, damage: number, hitsRemaining: number, empowered: boolean): void {
+    const halo = this.add
+      .ellipse(0, 0, empowered ? 42 : 30, empowered ? 24 : 18, empowered ? 0xfff3c2 : 0xf8ebc0, empowered ? 0.34 : 0.26)
+      .setStrokeStyle(2, empowered ? 0xfff9df : 0xf3df9b, empowered ? 0.74 : 0.56);
+    const blade = this.add
+      .rectangle(8, 0, empowered ? 34 : 28, empowered ? 8 : 6, 0xfff7de, 0.92)
+      .setStrokeStyle(2, empowered ? 0xfff1a6 : 0xf4dd9d, 0.74)
+      .setOrigin(0.12, 0.5);
+    const guard = this.add.rectangle(2, 0, empowered ? 10 : 8, empowered ? 14 : 10, 0xe6c868, 0.88).setOrigin(0.2, 0.5);
+    const container = this.add.container(x, y, [halo, blade, guard]).setDepth(8.6).setAlpha(empowered ? 0.98 : 0.92);
+    const target = this.getNearestEnemyTarget(x, y);
+    const direction = target
+      ? new Phaser.Math.Vector2(target.x - x, target.y - y).normalize()
+      : new Phaser.Math.Vector2(this.controller.getFacingVector().x, this.controller.getFacingVector().y).normalize();
+
+    container.setRotation(Math.atan2(direction.y, direction.x));
+
+    this.holyMirages.push({
+      visual: container,
+      glow: halo,
+      direction,
+      x,
+      y,
+      speed: empowered ? Math.max(1120, (this.currentStats.sword.techniques.mirageSpeed ?? 980) * 1.08) : this.currentStats.sword.techniques.mirageSpeed ?? 980,
+      damage,
+      hitsRemaining,
+      hitCooldownRemaining: 0,
+      timeoutRemaining: this.currentStats.sword.techniques.mirageTimeoutMs ?? 1600,
+      trailRemaining: 0,
+      empowered
+    });
+  }
+
+  private updateHolyMirages(delta: number): void {
+    if (this.holyMirages.length === 0) {
+      return;
+    }
+
+    const travelSeconds = delta / 1000;
+
+    for (let index = this.holyMirages.length - 1; index >= 0; index -= 1) {
+      const mirage = this.holyMirages[index];
+
+      mirage.timeoutRemaining = Math.max(0, mirage.timeoutRemaining - delta);
+      mirage.hitCooldownRemaining = Math.max(0, mirage.hitCooldownRemaining - delta);
+      mirage.trailRemaining = Math.max(0, mirage.trailRemaining - delta);
+
+      if (mirage.timeoutRemaining === 0 || !mirage.visual.active) {
+        this.releaseHolyMirage(index, 140);
+        continue;
+      }
+
+      const target = this.getNearestEnemyTarget(mirage.x, mirage.y);
+
+      if (target) {
+        const desired = new Phaser.Math.Vector2(target.x - mirage.x, target.y - mirage.y);
+
+        if (desired.lengthSq() > 4) {
+          desired.normalize();
+          mirage.direction = mirage.direction.lerp(desired, 0.26).normalize();
+        }
+      }
+
+      const step = mirage.speed * travelSeconds;
+      mirage.x += mirage.direction.x * step;
+      mirage.y += mirage.direction.y * step;
+      mirage.visual.setPosition(mirage.x, mirage.y);
+      mirage.visual.setRotation(Math.atan2(mirage.direction.y, mirage.direction.x));
+      mirage.visual.setScale(1 + Math.sin((this.time.now + index * 24) / 85) * 0.03);
+      mirage.glow.setAlpha(mirage.empowered ? 0.3 + Math.sin((this.time.now + index * 36) / 70) * 0.08 : 0.22 + Math.sin((this.time.now + index * 28) / 90) * 0.05);
+
+      if (mirage.trailRemaining === 0) {
+        this.spawnHolyMirageTrail(mirage.x, mirage.y, mirage.empowered);
+        mirage.trailRemaining = mirage.empowered ? 24 : 34;
+      }
+
+      if (!target || mirage.hitCooldownRemaining > 0) {
+        continue;
+      }
+
+      const targetRadius = Math.max(18, this.currentEncounter.enemySize * 0.34);
+
+      if (Phaser.Math.Distance.Between(mirage.x, mirage.y, target.x, target.y) > targetRadius + 10) {
+        continue;
+      }
+
+      const killed = this.resolveHolyMirageImpact(mirage, target);
+      mirage.hitsRemaining -= 1;
+
+      if (killed || mirage.hitsRemaining <= 0) {
+        this.releaseHolyMirage(index, mirage.empowered ? 180 : 140);
+        if (killed) {
+          return;
+        }
+        continue;
+      }
+
+      mirage.hitCooldownRemaining = 86;
+      mirage.x -= mirage.direction.x * 18;
+      mirage.y -= mirage.direction.y * 18;
+      mirage.timeoutRemaining = Math.max(mirage.timeoutRemaining, 320);
+    }
+  }
+
+  private resolveHolyMirageImpact(mirage: HolyMirageState, target: PlaceholderEnemy | BossEnemy): boolean {
+    const impact: HitImpactProfile = {
+      displacement: mirage.empowered ? 18 : 10,
+      controlLossMs: mirage.empowered ? 42 : 18,
+      interruptChance: mirage.empowered ? 0.34 : 0.14,
+      hitstopMs: mirage.empowered ? 16 : 10,
+      cameraShake: mirage.empowered ? 0.0022 : 0.001
+    };
+    const didKill = target.takeDamage(mirage.damage, mirage.direction, impact);
+
+    this.spawnHolyMirageImpactFx(target.x, target.y, mirage.empowered);
+    this.applyHitStop(impact.hitstopMs);
+
+    if (didKill) {
+      this.onEnemyDefeated();
+      return true;
+    }
+
+    if (!mirage.empowered) {
+      return false;
+    }
+
+    return this.triggerHolyTrinityExplosion(target.x, target.y, mirage.direction);
+  }
+
+  private triggerHolyTrinityExplosion(x: number, y: number, direction: Phaser.Math.Vector2): boolean {
+    const techniques = this.currentStats.sword.techniques;
+    const bonusDamage = Math.max(1, techniques.holyTrinityExplosionDamage ?? 6);
+    const radius = Math.max(22, techniques.holyTrinityExplosionRadius ?? 52);
+    const target = this.getNearestEnemyTarget(x, y);
+
+    this.spawnHolyExplosionFx(x, y, radius);
+
+    if (!target || Phaser.Math.Distance.Between(x, y, target.x, target.y) > radius + this.currentEncounter.enemySize * 0.34) {
+      return false;
+    }
+
+    const impact: HitImpactProfile = {
+      displacement: 16,
+      controlLossMs: 28,
+      interruptChance: 0.22,
+      hitstopMs: 10,
+      cameraShake: 0.0014
+    };
+    const didKill = target.takeDamage(bonusDamage, direction, impact);
+
+    if (didKill) {
+      this.onEnemyDefeated();
+      return true;
+    }
+
+    return false;
+  }
+
+  private spawnHolyFieldFromSweep(signal: AttackExecutionSignal): void {
+    const techniques = this.currentStats.sword.techniques;
+
+    if (
+      signal.profile.shape !== "sweep" ||
+      !techniques.holyGroundDurationMs ||
+      !techniques.holyGroundTickMs ||
+      !techniques.holyGroundDamagePerTick
+    ) {
+      return;
+    }
+
+    const radius = signal.kind === "heavy" ? techniques.holyGroundRadiusHeavy ?? 56 : techniques.holyGroundRadiusLight ?? 42;
+    const center = this.getAttackCenter(this.player.x, this.player.y, signal);
+    const outer = this.add
+      .ellipse(0, 0, radius * 2.18, radius * 1.18, 0xffefb7, 0.16)
+      .setStrokeStyle(2, 0xfff4cf, 0.5);
+    const core = this.add.ellipse(0, 0, radius * 1.42, radius * 0.72, 0xf3d57d, 0.24);
+    const line = this.add.rectangle(0, 0, radius * 1.3, Math.max(8, radius * 0.18), 0xfffbec, 0.22);
+    const visual = this.add.container(center.x, center.y, [outer, core, line]).setDepth(2.8).setRotation(signal.angle);
+
+    if (this.holyFields.length >= 10) {
+      const oldest = this.holyFields.shift();
+      oldest?.visual.destroy();
+    }
+
+    this.holyFields.push({
+      visual,
+      x: center.x,
+      y: center.y,
+      radius,
+      damage: techniques.holyGroundDamagePerTick,
+      tickRemaining: 0,
+      remaining: techniques.holyGroundDurationMs
+    });
+  }
+
+  private updateHolyFields(delta: number): void {
+    if (this.holyFields.length === 0) {
+      return;
+    }
+
+    for (let index = this.holyFields.length - 1; index >= 0; index -= 1) {
+      const field = this.holyFields[index];
+
+      field.remaining = Math.max(0, field.remaining - delta);
+      field.tickRemaining = Math.max(0, field.tickRemaining - delta);
+
+      if (field.remaining === 0 || !field.visual.active) {
+        this.releaseHolyField(index);
+        continue;
+      }
+
+      const lifeRatio = field.remaining / Math.max(1, this.currentStats.sword.techniques.holyGroundDurationMs ?? field.remaining);
+      field.visual.setAlpha(0.24 + lifeRatio * 0.52);
+      field.visual.setScale(1 + Math.sin((this.time.now + index * 40) / 120) * 0.02);
+
+      const target = this.getNearestEnemyTarget(field.x, field.y);
+
+      if (!target || field.tickRemaining > 0) {
+        continue;
+      }
+
+      const targetRadius = Math.max(18, this.currentEncounter.enemySize * 0.28);
+
+      if (Phaser.Math.Distance.Between(field.x, field.y, target.x, target.y) > field.radius + targetRadius) {
+        continue;
+      }
+
+      const direction = new Phaser.Math.Vector2(target.x - field.x, target.y - field.y);
+
+      if (direction.lengthSq() <= 1) {
+        direction.set(0, -1);
+      } else {
+        direction.normalize();
+      }
+
+      const impact: HitImpactProfile = {
+        displacement: 6,
+        controlLossMs: 10,
+        interruptChance: 0.08,
+        hitstopMs: 0,
+        cameraShake: 0
+      };
+      const didKill = target.takeDamage(field.damage, direction, impact);
+
+      field.tickRemaining = this.currentStats.sword.techniques.holyGroundTickMs ?? 180;
+      this.spawnHolyFieldTickFx(target.x, target.y);
+
+      if (didKill) {
+        this.onEnemyDefeated();
+        return;
+      }
+    }
+  }
+
+  private getNearestEnemyTarget(_x: number, _y: number): PlaceholderEnemy | BossEnemy | null {
+    return this.enemy?.alive ? this.enemy : null;
+  }
+
+  private getPlayerSwordTip(): Phaser.Math.Vector2 {
+    if (this.playerWeaponSprite?.visible) {
+      const angle = this.playerWeaponSprite.rotation - Math.PI / 2;
+      const tipLength = this.currentStats.combatStyle.bladeLength * this.playerWeaponLengthScale;
+      return new Phaser.Math.Vector2(
+        this.playerWeaponSprite.x + Math.cos(angle) * tipLength,
+        this.playerWeaponSprite.y + Math.sin(angle) * tipLength
+      );
+    }
+
+    const angle = this.playerWeaponBlade.rotation;
+    return new Phaser.Math.Vector2(
+      this.playerWeaponBlade.x + Math.cos(angle) * this.playerWeaponBlade.displayWidth,
+      this.playerWeaponBlade.y + Math.sin(angle) * this.playerWeaponBlade.displayWidth
+    );
+  }
+
+  private releaseHolyMirage(index: number, fadeDuration: number): void {
+    const [mirage] = this.holyMirages.splice(index, 1);
+
+    if (!mirage) {
+      return;
+    }
+
+    this.tweens.add({
+      targets: mirage.visual,
+      alpha: 0,
+      scaleX: 0.82,
+      scaleY: 0.82,
+      duration: fadeDuration,
+      onComplete: () => mirage.visual.destroy()
+    });
+  }
+
+  private clearHolyMirages(): void {
+    for (const mirage of this.holyMirages) {
+      mirage.visual.destroy();
+    }
+
+    this.holyMirages = [];
+  }
+
+  private releaseHolyField(index: number): void {
+    const [field] = this.holyFields.splice(index, 1);
+
+    if (!field) {
+      return;
+    }
+
+    this.tweens.add({
+      targets: field.visual,
+      alpha: 0,
+      scaleX: 0.9,
+      scaleY: 0.9,
+      duration: 120,
+      onComplete: () => field.visual.destroy()
+    });
+  }
+
+  private clearHolyFields(): void {
+    for (const field of this.holyFields) {
+      field.visual.destroy();
+    }
+
+    this.holyFields = [];
+  }
+
+  private spawnMirageCastFx(x: number, y: number): void {
+    const ring = this.add.circle(x, y, 16, 0xfff4c8, 0.34).setDepth(8.4).setStrokeStyle(2, 0xfffbeb, 0.64);
+    const flash = this.add.rectangle(x, y, 42, 10, 0xffe8a4, 0.54).setDepth(8.5);
+
+    this.tweens.add({
+      targets: ring,
+      alpha: 0,
+      scaleX: 1.8,
+      scaleY: 1.8,
+      duration: 180,
+      onComplete: () => ring.destroy()
+    });
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      scaleX: 1.22,
+      duration: 120,
+      onComplete: () => flash.destroy()
+    });
+  }
+
+  private spawnHolyMirageTrail(x: number, y: number, empowered: boolean): void {
+    const spark = this.add
+      .circle(x, y, empowered ? 6 : 4, empowered ? 0xfff6d5 : 0xffefc1, empowered ? 0.38 : 0.28)
+      .setDepth(8.2);
+
+    this.tweens.add({
+      targets: spark,
+      alpha: 0,
+      scaleX: empowered ? 2 : 1.7,
+      scaleY: empowered ? 2 : 1.7,
+      duration: empowered ? 180 : 140,
+      onComplete: () => spark.destroy()
+    });
+  }
+
+  private spawnHolyMirageImpactFx(x: number, y: number, empowered: boolean): void {
+    const ring = this.add
+      .circle(x, y, empowered ? 16 : 10, empowered ? 0xffefbc : 0xfff4d7, empowered ? 0.34 : 0.26)
+      .setDepth(8.7)
+      .setStrokeStyle(2, empowered ? 0xfffbec : 0xf9e4a8, empowered ? 0.76 : 0.58);
+    const crossA = this.add.rectangle(x, y, empowered ? 34 : 24, 4, 0xfff8e3, 0.62).setDepth(8.8);
+    const crossB = this.add.rectangle(x, y, empowered ? 34 : 24, 4, 0xfff8e3, 0.62).setDepth(8.8).setRotation(Math.PI / 2);
+
+    this.tweens.add({
+      targets: ring,
+      alpha: 0,
+      scaleX: empowered ? 2 : 1.5,
+      scaleY: empowered ? 2 : 1.5,
+      duration: empowered ? 220 : 160,
+      onComplete: () => ring.destroy()
+    });
+    this.tweens.add({
+      targets: [crossA, crossB],
+      alpha: 0,
+      scaleX: 1.14,
+      scaleY: 1.14,
+      duration: empowered ? 170 : 120,
+      onComplete: () => {
+        crossA.destroy();
+        crossB.destroy();
+      }
+    });
+  }
+
+  private spawnHolyExplosionFx(x: number, y: number, radius: number): void {
+    const core = this.add.circle(x, y, radius * 0.34, 0xfff2c2, 0.34).setDepth(8.7);
+    const ring = this.add.circle(x, y, radius * 0.4, 0xfffadf, 0.18).setDepth(8.6).setStrokeStyle(3, 0xfff5cf, 0.72);
+
+    this.tweens.add({
+      targets: core,
+      alpha: 0,
+      scaleX: 1.9,
+      scaleY: 1.9,
+      duration: 220,
+      onComplete: () => core.destroy()
+    });
+    this.tweens.add({
+      targets: ring,
+      alpha: 0,
+      scaleX: 1.6,
+      scaleY: 1.6,
+      duration: 240,
+      onComplete: () => ring.destroy()
+    });
+  }
+
+  private spawnHolyFieldTickFx(x: number, y: number): void {
+    const spark = this.add.circle(x, y, 5, 0xffefc4, 0.26).setDepth(8.1);
+
+    this.tweens.add({
+      targets: spark,
+      alpha: 0,
+      y: y - 8,
+      scaleX: 1.5,
+      scaleY: 1.5,
+      duration: 140,
+      onComplete: () => spark.destroy()
+    });
   }
 
   private drawHudChrome(): void {
@@ -467,6 +1306,104 @@ export class GameScene extends Phaser.Scene {
     for (let y = ARENA.y + 52; y < ARENA.y + ARENA.height; y += 52) {
       graphics.lineBetween(ARENA.x, y, ARENA.x + ARENA.width, y);
     }
+
+    switch (this.currentEncounter.arenaEnvironmentId) {
+      case "icePatches":
+        graphics.lineStyle(2, 0xcaf1ff, 0.34);
+        graphics.fillStyle(0xdaf5ff, 0.12);
+        this.arenaSlipZones.forEach((zone) => {
+          graphics.fillCircle(zone.x, zone.y, zone.radius);
+          graphics.strokeCircle(zone.x, zone.y, zone.radius);
+        });
+        break;
+      case "lavaVents":
+        graphics.lineStyle(2, 0xffa35e, 0.36);
+        graphics.fillStyle(0xff8f48, 0.1);
+        this.arenaVentZones.forEach((zone) => {
+          graphics.fillCircle(zone.x, zone.y, zone.radius);
+          graphics.strokeCircle(zone.x, zone.y, zone.radius);
+        });
+        break;
+      case "fogBank":
+        graphics.fillStyle(0xd6e1ea, 0.05);
+        graphics.fillEllipse(ARENA.x + 250, ARENA.y + 160, 260, 140);
+        graphics.fillEllipse(ARENA.x + ARENA.width - 260, ARENA.y + ARENA.height - 160, 280, 150);
+        graphics.fillEllipse(ARENA.x + ARENA.width * 0.54, ARENA.y + ARENA.height * 0.48, 340, 180);
+        break;
+      case "narrowCorridor":
+        graphics.fillStyle(0x070d14, 0.52);
+        graphics.fillRect(ARENA.x, ARENA.y, this.activeArenaBounds.x - ARENA.x, ARENA.height);
+        graphics.fillRect(
+          this.activeArenaBounds.right,
+          ARENA.y,
+          ARENA.x + ARENA.width - this.activeArenaBounds.right,
+          ARENA.height
+        );
+        graphics.lineStyle(3, 0xd8ccb4, 0.28);
+        graphics.strokeRect(
+          this.activeArenaBounds.x,
+          this.activeArenaBounds.y,
+          this.activeArenaBounds.width,
+          this.activeArenaBounds.height
+        );
+        break;
+      default:
+        break;
+    }
+
+    switch (this.currentEncounter.bossId) {
+      case "apex":
+        graphics.lineStyle(3, 0x6bc5dd, 0.28);
+        graphics.strokeEllipse(ARENA.x + ARENA.width * 0.5, ARENA.y + ARENA.height * 0.5, ARENA.width - 110, ARENA.height - 130);
+        graphics.lineStyle(2, 0x3f92a9, 0.24);
+        graphics.lineBetween(ARENA.x + 120, ARENA.y + 170, ARENA.x + ARENA.width - 120, ARENA.y + 170);
+        graphics.lineBetween(ARENA.x + 120, ARENA.y + ARENA.height - 170, ARENA.x + ARENA.width - 120, ARENA.y + ARENA.height - 170);
+        break;
+      case "enflamed":
+        graphics.lineStyle(3, 0xff9b54, 0.28);
+        graphics.lineBetween(ARENA.x + 110, ARENA.y + 110, ARENA.x + ARENA.width - 110, ARENA.y + ARENA.height - 110);
+        graphics.lineBetween(ARENA.x + ARENA.width - 160, ARENA.y + 130, ARENA.x + 150, ARENA.y + ARENA.height - 140);
+        graphics.strokeEllipse(ARENA.x + ARENA.width * 0.5, ARENA.y + ARENA.height * 0.5, 210, 210);
+        break;
+      case "honored":
+        graphics.lineStyle(3, 0xe5d39b, 0.26);
+        graphics.strokeEllipse(ARENA.x + ARENA.width * 0.5, ARENA.y + ARENA.height * 0.5, 390, 240);
+        graphics.lineBetween(ARENA.x + 140, ARENA.y + ARENA.height * 0.5, ARENA.x + ARENA.width - 140, ARENA.y + ARENA.height * 0.5);
+        graphics.lineBetween(ARENA.x + ARENA.width * 0.5, ARENA.y + 130, ARENA.x + ARENA.width * 0.5, ARENA.y + ARENA.height - 130);
+        break;
+      case "exalted":
+        graphics.lineStyle(3, 0xbadcf8, 0.26);
+        graphics.strokeRect(ARENA.x + 104, ARENA.y + 104, ARENA.width - 208, ARENA.height - 208);
+        graphics.strokeRect(ARENA.x + 182, ARENA.y + 156, ARENA.width - 364, ARENA.height - 312);
+        graphics.fillStyle(0xc9dff3, 0.16);
+        graphics.fillRect(ARENA.x + 118, ARENA.y + ARENA.height * 0.5 - 16, 24, 32);
+        graphics.fillRect(ARENA.x + ARENA.width - 142, ARENA.y + ARENA.height * 0.5 - 16, 24, 32);
+        break;
+      case "permafrost":
+        graphics.lineStyle(3, 0xc8f0ff, 0.28);
+        graphics.lineBetween(ARENA.x + 150, ARENA.y + 126, ARENA.x + 150, ARENA.y + ARENA.height - 126);
+        graphics.lineBetween(ARENA.x + ARENA.width - 150, ARENA.y + 126, ARENA.x + ARENA.width - 150, ARENA.y + ARENA.height - 126);
+        graphics.strokeEllipse(ARENA.x + ARENA.width * 0.5, ARENA.y + ARENA.height * 0.5, 250, 160);
+        break;
+      case "skelecar":
+        graphics.lineStyle(3, 0x73beff, 0.3);
+        graphics.lineBetween(ARENA.x + 112, ARENA.y + 156, ARENA.x + ARENA.width - 112, ARENA.y + 156);
+        graphics.lineBetween(ARENA.x + 112, ARENA.y + ARENA.height - 156, ARENA.x + ARENA.width - 112, ARENA.y + ARENA.height - 156);
+        graphics.strokeEllipse(ARENA.x + ARENA.width * 0.5, ARENA.y + ARENA.height * 0.5, 320, 182);
+        graphics.fillStyle(0x67a7ff, 0.12);
+        graphics.fillRect(ARENA.x + 144, ARENA.y + ARENA.height * 0.5 - 12, ARENA.width - 288, 24);
+        break;
+      case "danu":
+        graphics.lineStyle(3, 0xe5ad71, 0.28);
+        graphics.strokeRect(ARENA.x + 132, ARENA.y + 120, ARENA.width - 264, ARENA.height - 240);
+        graphics.lineBetween(ARENA.x + 180, ARENA.y + 176, ARENA.x + ARENA.width - 180, ARENA.y + 176);
+        graphics.lineBetween(ARENA.x + 180, ARENA.y + ARENA.height - 176, ARENA.x + ARENA.width - 180, ARENA.y + ARENA.height - 176);
+        graphics.fillStyle(0xf0c28d, 0.12);
+        graphics.fillRect(ARENA.x + ARENA.width * 0.5 - 18, ARENA.y + 134, 36, ARENA.height - 268);
+        break;
+      default:
+        break;
+    }
   }
 
   private hasTraining(modifierId: RunModifierId): boolean {
@@ -482,6 +1419,30 @@ export class GameScene extends Phaser.Scene {
 
     const latest = gameManager.getActiveRunModifierDefinition()?.name ?? owned[owned.length - 1]?.name ?? "Training";
     return owned.length === 1 ? latest : `${latest} +${owned.length - 1}`;
+  }
+
+  private getTutorialGameplayHint(): string | null {
+    if (!gameManager.isTutorialMode()) {
+      return null;
+    }
+
+    const nodeId = gameManager.getCurrentEncounterNodeDefinition()?.id;
+    const status = this.controller.getStatus();
+
+    switch (nodeId) {
+      case "tutorial-plains":
+        return status.stamina < status.staminaMax * 0.35 ? "Back out and let stamina recover before you attack again." : "Move into measure first, then strike.";
+      case "tutorial-savannah":
+        return status.parryCooldownRemaining <= 0 ? "Look for one clean bind instead of forcing trades." : "Use dash to make space, not to stay busy.";
+      case "tutorial-volcanic-land":
+        return this.comboCount > 0 ? "You have initiative. Use heavy only if the line is still clean." : "Heavy attacks are for punish windows, not guesses.";
+      case "tutorial-lava-fields":
+        return "Projectiles can be bound. Against armor, cleaner thrusts beat panic swings.";
+      case TUTORIAL_FINAL_NODE_ID:
+        return "Reset after a miss, bind when it is clean, and spend stamina carefully.";
+      default:
+        return null;
+    }
   }
 
   private getCurrentComboMode(): { label: string; tier: 0 | 1 | 2 | 3 } {
@@ -578,6 +1539,10 @@ export class GameScene extends Phaser.Scene {
     const profile = this.getReferenceAttackProfile();
     const { ideal, tolerance } = this.getIdealMeasure(profile);
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, this.enemy.x, this.enemy.y);
+    if (this.currentEncounter.arenaEnvironmentId === "fogBank" && distance > ideal + tolerance * 1.4) {
+      this.measureGraphics.clear();
+      return;
+    }
     const within = Math.abs(distance - ideal) <= tolerance;
     const tooClose = distance < ideal - tolerance;
     const color = within ? COLORS.success : tooClose ? COLORS.danger : 0x82a8c8;
@@ -604,11 +1569,18 @@ export class GameScene extends Phaser.Scene {
     const footprint = this.getAttackFootprint(signal);
     const halfWidth = footprint.length * 0.5;
     const halfHeight = footprint.width * 0.5;
+    const telegraphTint = signal.profile.tint;
+    const guideTint = 0xf6e6c8;
+    const outlineWidth = signal.kind === "heavy" || signal.profile.attackClass === "cleave" ? 3 : 2;
+    const fogScale = this.currentEncounter.arenaEnvironmentId === "fogBank" ? 0.72 : 1;
+    const outlineAlpha = (signal.profile.delivery === "ranged" ? 0.54 : signal.kind === "heavy" ? 0.42 : 0.34) * fogScale;
 
     if (signal.profile.delivery === "ranged") {
-      this.telegraphGraphics.lineStyle(2, 0xf2c38a, 0.46);
+      this.telegraphGraphics.lineStyle(outlineWidth, telegraphTint, outlineAlpha);
       this.telegraphGraphics.lineBetween(this.enemy.x, this.enemy.y, center.x, center.y);
       this.telegraphGraphics.strokeEllipse(center.x, center.y, footprint.length, footprint.width + 6);
+      this.telegraphGraphics.lineStyle(2, guideTint, 0.42);
+      this.telegraphGraphics.strokeEllipse(center.x, center.y, footprint.length * 0.72, Math.max(12, footprint.width * 0.68));
       return;
     }
 
@@ -619,13 +1591,13 @@ export class GameScene extends Phaser.Scene {
       new Phaser.Math.Vector2(-halfWidth, halfHeight)
     ].map((point) => point.rotate(signal.angle).add(center));
 
-    this.telegraphGraphics.lineStyle(2, 0xf2c38a, 0.34);
+    this.telegraphGraphics.lineStyle(outlineWidth, telegraphTint, outlineAlpha);
     this.telegraphGraphics.beginPath();
     this.telegraphGraphics.moveTo(localCorners[0].x, localCorners[0].y);
     localCorners.slice(1).forEach((corner) => this.telegraphGraphics.lineTo(corner.x, corner.y));
     this.telegraphGraphics.closePath();
     this.telegraphGraphics.strokePath();
-    this.telegraphGraphics.lineStyle(1, 0xf6d7aa, 0.44);
+    this.telegraphGraphics.lineStyle(2, guideTint, 0.42);
     this.telegraphGraphics.lineBetween(this.enemy.x, this.enemy.y, center.x, center.y);
   }
 
@@ -694,6 +1666,28 @@ export class GameScene extends Phaser.Scene {
       this.nextAttackBonusDamage = 0;
     }
 
+    if (this.dashPassBuffRemaining > 0 && this.currentStats.dashPassDamageBonus > 0) {
+      profile.damage += this.currentStats.dashPassDamageBonus;
+      profile.impact = {
+        ...profile.impact,
+        displacement: profile.impact.displacement + 14,
+        controlLossMs: profile.impact.controlLossMs + 12
+      };
+      this.dashPassBuffRemaining = 0;
+    }
+
+    if (this.stillnessStacks > 0 && this.currentStats.stillnessDamagePerStack > 0) {
+      const stillnessBonus = this.stillnessStacks * this.currentStats.stillnessDamagePerStack;
+      profile.damage += stillnessBonus;
+      profile.impact = {
+        ...profile.impact,
+        controlLossMs: profile.impact.controlLossMs + this.stillnessStacks * 12
+      };
+      this.pushFeedback(`Permafrost focus +${stillnessBonus}`, 0xb8e8f8);
+      this.stillnessStacks = 0;
+      this.stillnessChargeProgress = 0;
+    }
+
     if (this.recentDashAttackWindowRemaining > 0 && techniques.dashRecoveryScale) {
       profile.recovery = Math.max(48, Math.round(profile.recovery * techniques.dashRecoveryScale));
     }
@@ -737,6 +1731,7 @@ export class GameScene extends Phaser.Scene {
     this.activeAttackVisual = this.createAttackVisual(signal, false).setDepth(4);
     this.syncAttackVisual(this.activeAttackVisual, this.player.x, this.player.y, signal);
     this.spawnAttackFlash(this.player.x, this.player.y, signal, false);
+    this.spawnHolyFieldFromSweep(signal);
     this.tweens.add({
       targets: this.activeAttackVisual,
       alpha: 0.05,
@@ -1335,6 +2330,9 @@ export class GameScene extends Phaser.Scene {
     const enemyState = this.enemy.getCombatSnapshot();
     const enemyHealth = this.enemy.health;
     const enemyDefinition = getEnemyDefinition(this.currentEncounter.enemyId);
+    const bossEncounter = Boolean(this.currentEncounter.bossId);
+    const longComboBossResistance = bossEncounter && this.comboCount >= 5;
+    const thrustLine = signal.profile.shape === "thrust";
     let damage = signal.profile.damage;
     let impact: HitImpactProfile = {
       ...signal.profile.impact
@@ -1348,14 +2346,18 @@ export class GameScene extends Phaser.Scene {
     let feedbackColor = signal.profile.attackClass === "lunge" ? 0xaec8e2 : signal.profile.attackClass === "cleave" ? 0xd9a56f : COLORS.success;
 
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, this.enemy.x, this.enemy.y);
-    const idealDistance = signal.profile.shape === "thrust" ? signal.profile.range * 0.84 : signal.profile.range * 0.68;
-    const { tolerance: measureTolerance } = this.getIdealMeasure(signal.profile);
+    const idealDistance = thrustLine ? signal.profile.range * 0.84 : signal.profile.range * 0.68;
+    const { tolerance: baseMeasureTolerance } = this.getIdealMeasure(signal.profile);
+    const measureTolerance = baseMeasureTolerance + (bossEncounter && thrustLine ? 12 : 0);
     const measureError = Math.abs(distance - idealDistance);
     const measured = measureError <= measureTolerance;
     const initiative = enemyState.phase === "windup" || enemyState.phase === "recovery";
 
     if (measured) {
-      damage += (signal.profile.shape === "thrust" ? 6 : 4) + (techniques.measureBonusDamage ?? 0);
+      damage += (thrustLine ? 6 : 4) + (techniques.measureBonusDamage ?? 0);
+      if (bossEncounter && thrustLine) {
+        damage += 2;
+      }
       impact = {
         ...impact,
         displacement: impact.displacement + (signal.kind === "heavy" ? 24 : 12),
@@ -1385,6 +2387,7 @@ export class GameScene extends Phaser.Scene {
       this.lastSuccessfulAttackKind === signal.kind &&
       this.lastSuccessfulAttackShape === signal.profile.shape &&
       !measured &&
+      !(bossEncounter && thrustLine) &&
       this.postBindRewardRemaining === 0
     ) {
       damage = Math.max(1, damage - 2);
@@ -1412,8 +2415,16 @@ export class GameScene extends Phaser.Scene {
       damage += techniques.alternateAttackBonus;
     }
 
-    if (signal.profile.shape === "thrust" && techniques.thrustStreakDamageStep) {
+    if (thrustLine && techniques.thrustStreakDamageStep) {
       damage += this.thrustStreak * techniques.thrustStreakDamageStep;
+    }
+
+    if (bossEncounter && thrustLine) {
+      impact = {
+        ...impact,
+        controlLossMs: impact.controlLossMs + 12,
+        interruptChance: Math.min(0.98, impact.interruptChance + 0.04)
+      };
     }
 
     if (this.recentDashAttackWindowRemaining > 0) {
@@ -1451,6 +2462,11 @@ export class GameScene extends Phaser.Scene {
 
     damage = Math.max(1, Math.round(damage * this.getArmorDamageScale(this.currentEncounter.armor, signal)));
 
+    // Bosses still reward clean openings, but sixth-hit-and-beyond strings should not melt phases.
+    if (longComboBossResistance) {
+      damage = Math.max(1, Math.round(damage * 0.25));
+    }
+
     if (this.hasTraining("measuredApproach") && measured) {
       impact = {
         ...impact,
@@ -1466,7 +2482,8 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (techniques.bleedOnHitDamage && techniques.bleedOnHitDurationMs) {
-      bleedDamage += techniques.bleedOnHitDamage + Math.max(0, this.comboCount - 1) * (techniques.bleedStackStep ?? 0);
+      const bleedStacks = Math.max(0, this.comboCount - 1) * (techniques.bleedStackStep ?? 0);
+      bleedDamage += techniques.bleedOnHitDamage + Math.round(bleedStacks * (longComboBossResistance ? 0.25 : 1));
       bleedDurationMs = Math.max(bleedDurationMs, techniques.bleedOnHitDurationMs);
     }
 
@@ -1480,7 +2497,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    if (signal.kind === "heavy" && signal.profile.shape === "thrust" && techniques.bleedOnHeavyDamage && techniques.bleedOnHeavyDurationMs) {
+    if (signal.kind === "heavy" && thrustLine && techniques.bleedOnHeavyDamage && techniques.bleedOnHeavyDurationMs) {
       bleedDamage += techniques.bleedOnHeavyDamage;
       bleedDurationMs = Math.max(bleedDurationMs, techniques.bleedOnHeavyDurationMs);
     }
@@ -1610,6 +2627,10 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    if (this.currentStats.perfectBindStaminaRestoreBonus > 0) {
+      this.controller.refundStamina(this.currentStats.perfectBindStaminaRestoreBonus);
+    }
+
     if (techniques.healOnPerfectBind) {
       this.playerHp = Math.min(this.playerMaxHp, this.playerHp + techniques.healOnPerfectBind);
     }
@@ -1642,6 +2663,7 @@ export class GameScene extends Phaser.Scene {
     const thrust = signal.profile.shape === "thrust";
     const cleave = signal.profile.attackClass === "cleave";
     const lunge = signal.profile.attackClass === "lunge";
+    const bossEncounter = Boolean(this.currentEncounter.bossId);
     let scale: number;
 
     if (armor === "unarmored") {
@@ -1664,6 +2686,16 @@ export class GameScene extends Phaser.Scene {
       const pierceRatio = Phaser.Math.Clamp(techniques.armorPierceRatio, 0, 0.85);
       const pierceTarget = thrust ? 1.12 : armor === "light" ? 1.04 : 0.96;
       scale = Phaser.Math.Linear(scale, pierceTarget, pierceRatio);
+    }
+
+    if (signal.kind === "heavy" && techniques.heavyArmorPierceRatio) {
+      const heavyPierceRatio = Phaser.Math.Clamp(techniques.heavyArmorPierceRatio, 0, 0.85);
+      scale = Phaser.Math.Linear(scale, 1, heavyPierceRatio);
+    }
+
+    if (bossEncounter && thrust) {
+      const bossThrustFloor = armor === "heavy" ? (signal.kind === "heavy" || lunge ? 1.08 : 0.98) : armor === "light" ? 1.08 : 1.02;
+      scale = Math.max(scale, bossThrustFloor);
     }
 
     return scale;
@@ -1771,6 +2803,106 @@ export class GameScene extends Phaser.Scene {
   private isLargeWarBladeStyle(): boolean {
     const style = this.currentStats.combatStyle;
     return style.affinity === "war" && style.bladeLength >= 100;
+  }
+
+  private usesRapierSprite(): boolean {
+    return RAPIER_SPRITE_SWORDS.has(this.currentStats.sword.id);
+  }
+
+  private getRapierSpriteBaseScale(): number {
+    const style = this.currentStats.combatStyle;
+    const targetVisibleHeight = Phaser.Math.Clamp(style.bladeLength + style.guardSize * 0.35, 94, 112);
+    return targetVisibleHeight / RAPIER_VISIBLE_HEIGHT;
+  }
+
+  private getRapierAnimationPose(
+    status: CombatStatusSnapshot,
+    signal: AttackExecutionSignal | null,
+    phase: ReturnType<CombatController["getCurrentAttackPhase"]>
+  ): {
+    forward: number;
+    side: number;
+    rotation: number;
+    widthScale: number;
+    lengthScale: number;
+    alpha: number;
+  } {
+    const time = this.time.now;
+    const idleDrift = Math.sin(time * 0.0068);
+    const idleLift = Math.cos(time * 0.0046);
+    const shimmer = Math.sin(time * 0.018);
+    let forward = idleLift * 1.6;
+    let side = idleDrift * 1.8;
+    let rotation = idleDrift * 0.02;
+    let widthScale = 1 + idleLift * 0.012;
+    let lengthScale = 1 + Math.abs(idleDrift) * 0.016;
+    let alpha = 0.98;
+
+    if (status.isDashing) {
+      forward += 7;
+      side *= 0.35;
+      rotation += 0.04;
+      widthScale *= 0.95;
+      lengthScale *= 1.07;
+      alpha = 0.9;
+    }
+
+    if (status.isParrying) {
+      forward += 5;
+      side += 5 + shimmer * 1.2;
+      rotation += 0.18 + shimmer * 0.03;
+      widthScale *= 1.08;
+      lengthScale *= 1.05;
+      alpha = 0.9 + (shimmer + 1) * 0.04;
+    }
+
+    if (!signal || !phase) {
+      return {
+        forward,
+        side,
+        rotation,
+        widthScale,
+        lengthScale,
+        alpha
+      };
+    }
+
+    const thrust = signal.profile.shape === "thrust";
+    const heavy = signal.kind === "heavy";
+    const lunge = signal.profile.attackClass === "lunge";
+    const sweepSign = heavy ? 1 : -1;
+
+    if (phase === "windup") {
+      forward += thrust ? (heavy ? -9 : -6) : heavy ? -4 : -2;
+      side += thrust ? (heavy ? 2 : 1) : (heavy ? 5 : 3) * -sweepSign;
+      rotation += thrust ? (heavy ? -0.05 : -0.03) : (heavy ? 0.08 : 0.05) * -sweepSign;
+      widthScale *= heavy ? 1.04 : 1.02;
+      lengthScale *= thrust ? 0.98 : 1.01;
+      alpha = 0.96;
+    } else if (phase === "active") {
+      forward += thrust ? (lunge ? 18 : heavy ? 12 : 8) : heavy ? 8 : 5;
+      side += thrust ? (heavy ? -1 : 0) : (heavy ? 10 : 7) * sweepSign;
+      rotation += thrust ? (lunge ? 0.035 : 0.02) : (heavy ? 0.14 : 0.1) * sweepSign;
+      widthScale *= thrust ? 0.97 : 1.01;
+      lengthScale *= thrust ? (lunge ? 1.18 : 1.12) : heavy ? 1.06 : 1.04;
+      alpha = 1;
+    } else {
+      forward += thrust ? 1 : 2;
+      side += thrust ? -0.5 : 2 * sweepSign;
+      rotation += thrust ? 0.014 : 0.04 * sweepSign;
+      widthScale *= 1;
+      lengthScale *= 1.02;
+      alpha = 0.98;
+    }
+
+    return {
+      forward,
+      side,
+      rotation,
+      widthScale,
+      lengthScale,
+      alpha
+    };
   }
 
   private getPlayerAttackPoseTarget(
@@ -2015,29 +3147,68 @@ export class GameScene extends Phaser.Scene {
       : this.playerInvulnRemaining > 0 && Math.floor(this.playerInvulnRemaining / 45) % 2 === 0
         ? 0xf0b4ab
         : this.currentStats.sword.accent;
+    const guardX =
+      this.player.x + facing.x * (reach + this.playerWeaponForwardOffset * 0.4) + perpendicular.x * this.playerWeaponSideOffset * 0.34;
+    const guardY =
+      this.player.y + facing.y * (reach + this.playerWeaponForwardOffset * 0.4) + perpendicular.y * this.playerWeaponSideOffset * 0.34;
+    const bladeX =
+      this.player.x + facing.x * (reach + 6 + this.playerWeaponForwardOffset) + perpendicular.x * this.playerWeaponSideOffset;
+    const bladeY =
+      this.player.y + facing.y * (reach + 6 + this.playerWeaponForwardOffset) + perpendicular.y * this.playerWeaponSideOffset;
 
     this.player.setScale(bodyScaleX, bodyScaleY);
     this.player.setRotation(this.playerBodyTilt);
     this.player.setStrokeStyle(2, status.isParrying ? COLORS.gold : COLORS.ghost, status.isParrying ? 0.74 : 0.4);
 
-    this.playerWeaponGuard.setPosition(
-      this.player.x + facing.x * (reach + this.playerWeaponForwardOffset * 0.4) + perpendicular.x * this.playerWeaponSideOffset * 0.34,
-      this.player.y + facing.y * (reach + this.playerWeaponForwardOffset * 0.4) + perpendicular.y * this.playerWeaponSideOffset * 0.34
-    );
-    this.playerWeaponGuard.setRotation(angle + this.playerWeaponRotationOffset * 0.4);
-    this.playerWeaponGuard.setFillStyle(guardTint, 0.98);
-    this.playerWeaponBlade.setPosition(
-      this.player.x + facing.x * (reach + 6 + this.playerWeaponForwardOffset) + perpendicular.x * this.playerWeaponSideOffset,
-      this.player.y + facing.y * (reach + 6 + this.playerWeaponForwardOffset) + perpendicular.y * this.playerWeaponSideOffset
-    );
-    this.playerWeaponBlade.setRotation(angle + this.playerWeaponRotationOffset);
-    this.playerWeaponBlade.setScale(bladeScale * this.playerWeaponLengthScale, (status.isDashing ? 0.94 : 1) * this.playerWeaponHeightScale);
-    this.playerWeaponBlade.setFillStyle(bladeTint, 0.95);
+    if (this.playerWeaponSprite) {
+      const rapierBaseScale = this.getRapierSpriteBaseScale();
+      const rapierPose = this.getRapierAnimationPose(status, attackSignal, this.controller.getCurrentAttackPhase());
+      const spriteX = guardX + facing.x * rapierPose.forward + perpendicular.x * rapierPose.side;
+      const spriteY = guardY + facing.y * rapierPose.forward + perpendicular.y * rapierPose.side;
+
+      this.playerWeaponGuard.setVisible(false);
+      this.playerWeaponBlade.setVisible(false);
+      this.playerWeaponSprite.setVisible(true);
+      this.playerWeaponSprite.setPosition(spriteX, spriteY);
+      this.playerWeaponSprite.setRotation(angle + this.playerWeaponRotationOffset * 0.76 + rapierPose.rotation + Math.PI / 2);
+      this.playerWeaponSprite.setScale(
+        rapierBaseScale * (status.isDashing ? 0.94 : 1) * this.playerWeaponHeightScale * rapierPose.widthScale,
+        rapierBaseScale * bladeScale * this.playerWeaponLengthScale * rapierPose.lengthScale
+      );
+      this.playerWeaponSprite.setAlpha(rapierPose.alpha);
+
+      if (status.isParrying) {
+        this.playerWeaponSprite.setTint(COLORS.gold);
+      } else {
+        this.playerWeaponSprite.clearTint();
+      }
+    } else {
+      this.playerWeaponGuard.setVisible(true);
+      this.playerWeaponBlade.setVisible(true);
+      this.playerWeaponGuard.setPosition(guardX, guardY);
+      this.playerWeaponGuard.setRotation(angle + this.playerWeaponRotationOffset * 0.4);
+      this.playerWeaponGuard.setFillStyle(guardTint, 0.98);
+      this.playerWeaponBlade.setPosition(bladeX, bladeY);
+      this.playerWeaponBlade.setRotation(angle + this.playerWeaponRotationOffset);
+      this.playerWeaponBlade.setScale(
+        bladeScale * this.playerWeaponLengthScale,
+        (status.isDashing ? 0.94 : 1) * this.playerWeaponHeightScale
+      );
+      this.playerWeaponBlade.setFillStyle(bladeTint, 0.95);
+    }
+
     this.player.setFillStyle(bodyTint);
   }
 
   private damagePlayer(amount: number, direction: { x: number; y: number }, impact: HitImpactProfile): void {
     if (this.combatLocked || this.playerInvulnRemaining > 0) {
+      return;
+    }
+
+    if (gameManager.isImmortalModeEnabled()) {
+      this.playerInvulnRemaining = 120;
+      this.player.body.setVelocity(direction.x * impact.displacement * 0.28, direction.y * impact.displacement * 0.28);
+      this.pushFeedback("Immortal test mode", COLORS.gold);
       return;
     }
 
@@ -2052,6 +3223,7 @@ export class GameScene extends Phaser.Scene {
     const scaledDamage = Math.max(1, Math.round(amount * this.currentStats.incomingDamageScale * guardScale));
 
     this.playerHp = Math.max(0, this.playerHp - scaledDamage - lowStaminaPunish);
+    gameManager.recordPlayerDamaged();
     this.playerInvulnRemaining = 260;
     this.comboTimerRemaining = 0;
     this.postBindRewardRemaining = 0;
@@ -2274,6 +3446,7 @@ export class GameScene extends Phaser.Scene {
     this.clearEnemyProjectiles();
     const encounterNode = gameManager.getCurrentEncounterNodeDefinition();
     const tutorialFinale = gameManager.isTutorialMode() && encounterNode?.id === TUTORIAL_FINAL_NODE_ID;
+    gameManager.recordEncounterVictory();
 
     this.lootText.setText(tutorialFinale ? "Final fight complete. Opening the tutorial summary." : "Materials collected. Returning to the upgrade screen.");
     this.forgeTransitionEvent = this.time.delayedCall(900, () => {
@@ -2465,38 +3638,90 @@ export class GameScene extends Phaser.Scene {
     const state = gameManager.getState();
     const status = this.controller.getStatus();
     const enemyHealth = this.enemy.health;
+    const bossReward = this.currentEncounter.bossRewardRelicId ? RELICS[this.currentEncounter.bossRewardRelicId] : null;
+    const encounterReward = this.currentEncounter.rewardRelicId ? RELICS[this.currentEncounter.rewardRelicId] : null;
     const dashText = status.dashCooldownRemaining <= 0 ? "ready" : `${(status.dashCooldownRemaining / 1000).toFixed(2)}s`;
     const comboLabel = this.comboCount > 1 ? `x${this.comboCount}` : "none";
     const bindReady = status.parryCooldownRemaining <= 0 ? "ready" : `${(status.parryCooldownRemaining / 1000).toFixed(2)}s`;
+    const abilityText = this.currentStats.sword.techniques.activeAbilityName
+      ? this.excaliburAbilityCooldownRemaining <= 0
+        ? "ready"
+        : `${(this.excaliburAbilityCooldownRemaining / 1000).toFixed(1)}s`
+      : null;
     const staminaText = `${Math.round(status.stamina)}/${Math.round(status.staminaMax)}`;
     const comboMode = this.getCurrentComboMode();
     const modifierLabel = this.getTrainingHudLabel();
+    this.refreshBossHud();
 
     this.hudText.setText(
       [
         this.currentStats.sword.name,
         `HP ${this.playerHp}/${this.playerMaxHp}  Stamina ${staminaText}`,
         `Chain ${comboLabel}  ${this.formatInventoryInline(state.materials)}`,
-        `Dash ${dashText}  Bind ${bindReady}`
+        `Dash ${dashText}  Bind ${bindReady}${abilityText ? `  F ${abilityText}` : ""}`
       ].join("\n")
     );
 
+    const guidance =
+      this.lastFeedback ||
+      this.getTutorialGameplayHint() ||
+      (this.currentEncounter.challengeRuleText ??
+        this.currentEncounter.bossCoreRule ??
+        (this.currentEncounter.arenaEnvironmentName ? `${this.currentEncounter.arenaEnvironmentName}: learn the floor, then learn the blade.` : "Spacing matters: green ring means your next strike is in measure."));
     this.guidanceText.setColor(colorHex(this.feedbackColor));
-    this.guidanceText.setText(this.lastFeedback || "Spacing matters: green ring means your next strike is in measure.");
+    this.guidanceText.setText(guidance);
     this.swordModeText.setText(`${comboMode.label}  |  ${modifierLabel}`);
 
     this.enemyText.setText(
       this.enemy.alive
-        ? [
-            `Enemy ${this.enemy.weaponName}`,
-            `HP ${enemyHealth.current}/${enemyHealth.max}  Armor ${this.formatArmorLabel(this.currentEncounter.armor)}`,
-            `Pattern ${this.currentEncounter.pattern}`
-          ].join("\n")
+        ? this.currentEncounter.bossId
+          ? [
+              `${this.currentEncounter.bossName ?? this.enemy.weaponName}`,
+              `HP ${enemyHealth.current}/${enemyHealth.max}  Armor ${this.formatArmorLabel(this.currentEncounter.armor)}`,
+              this.currentEncounter.bossLesson ? `Lesson ${this.currentEncounter.bossLesson}` : bossReward ? `Reward ${bossReward.name}` : "Boss encounter"
+            ].join("\n")
+          : [
+              this.currentEncounter.eliteTitleName ? `${this.currentEncounter.eliteTitleName} ${this.enemy.weaponName}` : `Enemy ${this.enemy.weaponName}`,
+              `HP ${enemyHealth.current}/${enemyHealth.max}  Armor ${this.formatArmorLabel(this.currentEncounter.armor)}`,
+              this.currentEncounter.challengeName
+                ? `Vow ${this.currentEncounter.challengeName}`
+                : this.currentEncounter.arenaEnvironmentName
+                  ? `Arena ${this.currentEncounter.arenaEnvironmentName}`
+                  : `Pattern ${this.currentEncounter.pattern}`
+            ].join("\n")
         : "Enemy broken\nCollect the spoils"
     );
 
     if (!this.dropsSpawned && !this.combatLocked) {
-      this.lootText.setText(`Defeat the ${this.enemy.weaponName.toLowerCase()} to earn ${formatMaterialCost(this.getEncounterRewardMaterials())}.`);
+      this.lootText.setText(
+        this.currentEncounter.bossId && bossReward
+          ? `Break ${this.enemy.weaponName.toLowerCase()} to claim ${bossReward.name} and ${formatMaterialCost(this.getEncounterRewardMaterials())}.`
+          : this.currentEncounter.challengeId && encounterReward
+            ? `Survive the vow to claim ${encounterReward.name} and ${formatMaterialCost(this.getEncounterRewardMaterials())}.`
+          : `Defeat the ${this.enemy.weaponName.toLowerCase()} to earn ${formatMaterialCost(this.getEncounterRewardMaterials())}.`
+      );
     }
+  }
+
+  private refreshBossHud(): void {
+    if (!(this.enemy instanceof BossEnemy) || !this.bossBarFill || !this.bossBarLabel || !this.bossBarTrack || !this.bossBarFrame) {
+      return;
+    }
+
+    const phaseHealth = this.enemy.health;
+    const phase = this.enemy.getCurrentPhase();
+
+    if (phase !== this.lastBossPhaseSeen) {
+      this.lastBossPhaseSeen = phase;
+
+      if (phase === 2) {
+        this.pushFeedback(`${this.currentEncounter.bossName ?? this.enemy.weaponName} surges into Phase 2.`, COLORS.danger);
+      }
+    }
+
+    const ratio = Phaser.Math.Clamp(phaseHealth.current / Math.max(1, phaseHealth.max), 0, 1);
+    const fullWidth = 442;
+    this.bossBarFill.setDisplaySize(Math.max(0, fullWidth * ratio), 12);
+    this.bossBarLabel.setText(this.enemy.getBossLabel());
   }
 }

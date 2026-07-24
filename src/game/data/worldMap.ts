@@ -1,15 +1,24 @@
 import type {
+  ArenaEnvironmentId,
+  BossId,
   EncounterConfig,
   EnemyId,
+  EliteTitleId,
   MaterialCost,
   MaterialId,
   RegionDefinition,
   RegionId,
   RelicId,
+  ShrineChallengeId,
   WorldNodeDefinition,
   WorldNodeType
 } from "../core/types";
+import { getArenaEnvironmentDefinition } from "./arenaEnvironments";
+import { applyBossBonusRewards, getBossDefinition, rollBossIdForEncounter } from "./bosses";
+import { getChallengeShrineDefinition, CHALLENGE_SHRINE_IDS } from "./challengeShrines";
 import { BIOME_ENEMY_POOLS, ENEMY_DEFINITIONS, getEnemyDefinition } from "./enemies";
+import { ELITE_TITLE_IDS, getEliteTitleDefinition } from "./eliteTitles";
+import { getRunEventDefinition, pickRunEventId } from "./runEvents";
 
 const LANE_COUNT = 7;
 const MAX_DEPTH = 11;
@@ -166,6 +175,7 @@ export interface GeneratedWorldChapter {
   startNodeIds: string[];
   nextNodeOrdinal: number;
   nextWorldDepth: number;
+  spawnedRareEvent?: boolean;
 }
 
 const RELIC_REGION_PAIRS: Array<{ relicId: RelicId; regionId: RegionId }> = [
@@ -175,6 +185,21 @@ const RELIC_REGION_PAIRS: Array<{ relicId: RelicId; regionId: RegionId }> = [
   { relicId: "coastlineCharm", regionId: "shore" },
   { relicId: "starfallDiadem", regionId: "frozenPeaks" }
 ];
+const CURSED_RELIC_IDS: RelicId[] = ["sunlitBrand", "oathglassSeal", "celerityCurse"];
+const COLD_ARENA_REGIONS = new Set<RegionId>(["tundra", "frostlands", "frozenPeaks", "glacier", "iceCaves", "snowyForest"]);
+const VOLCANIC_ARENA_REGIONS = new Set<RegionId>(["volcano", "volcanicLand", "ashlands", "lavaFields", "obsidianWastes", "sulfurSprings"]);
+const FOG_ARENA_REGIONS = new Set<RegionId>(["sea", "ocean", "shore", "river", "archipelago", "coralCoast", "mangrove", "swamp", "wetlands"]);
+const CORRIDOR_ARENA_REGIONS = new Set<RegionId>([
+  "mountain",
+  "cliffs",
+  "canyon",
+  "badlands",
+  "caverns",
+  "ancientRuins",
+  "forgottenTemple",
+  "skyIslands",
+  "sunkenRuins"
+]);
 
 function summarizeEnemyRoster(regionId: RegionId): string[] {
   return BIOME_ENEMY_POOLS[regionId]
@@ -1018,6 +1043,49 @@ function getRelicForRegion(regionId: RegionId): RelicId | undefined {
   return RELIC_REGION_PAIRS.find((entry) => entry.regionId === regionId)?.relicId;
 }
 
+function pickChallengeRelicId(ownedRelicIds: RelicId[]): RelicId | undefined {
+  const available = CURSED_RELIC_IDS.filter((relicId) => !ownedRelicIds.includes(relicId));
+  return available.length > 0 ? pickOne(available) : undefined;
+}
+
+function pickEliteTitleId(): EliteTitleId {
+  return pickOne(ELITE_TITLE_IDS);
+}
+
+function pickChallengeId(): ShrineChallengeId {
+  return pickOne(CHALLENGE_SHRINE_IDS);
+}
+
+function pickArenaEnvironmentId(regionId: RegionId, nodeType: WorldNodeType): ArenaEnvironmentId | undefined {
+  if (nodeType === "boss" || nodeType === "merchant" || nodeType === "relic" || nodeType === "event") {
+    return undefined;
+  }
+
+  const chance = nodeType === "challenge" ? 1 : nodeType === "miniboss" ? 0.34 : 0.18;
+
+  if (Math.random() >= chance) {
+    return undefined;
+  }
+
+  if (COLD_ARENA_REGIONS.has(regionId)) {
+    return "icePatches";
+  }
+
+  if (VOLCANIC_ARENA_REGIONS.has(regionId)) {
+    return "lavaVents";
+  }
+
+  if (FOG_ARENA_REGIONS.has(regionId)) {
+    return "fogBank";
+  }
+
+  if (CORRIDOR_ARENA_REGIONS.has(regionId)) {
+    return "narrowCorridor";
+  }
+
+  return undefined;
+}
+
 function pickEnemyForNode(regionId: RegionId, recentEnemyIds: EnemyId[] = []): EnemyId {
   const pool = BIOME_ENEMY_POOLS[regionId];
   const filteredPool = pool.filter((enemyId) => !recentEnemyIds.includes(enemyId));
@@ -1030,8 +1098,12 @@ function createRewardMaterials(regionId: RegionId, nodeType: WorldNodeType, dept
   const primary = region.primaryMaterials;
   const advancedPrimary = primary.filter((materialId) => !CORE_MATERIALS.has(materialId));
   const totalDrops =
-    nodeType === "miniboss"
+    nodeType === "boss"
+      ? 5 + Math.min(2, Math.floor(chapterIndex / 2))
+      : nodeType === "miniboss"
       ? 3 + (chapterIndex > 1 ? 1 : 0)
+      : nodeType === "challenge"
+        ? 4 + (chapterIndex > 0 ? 1 : 0)
       : nodeType === "relic"
         ? 3
         : nodeType === "merchant"
@@ -1053,7 +1125,9 @@ function createRewardMaterials(regionId: RegionId, nodeType: WorldNodeType, dept
   if (advancedPrimary.length > 0 && nodeType !== "merchant") {
     const featuredMaterialId = advancedPrimary[0];
     let featuredChance =
-      nodeType === "relic"
+      nodeType === "boss"
+        ? 0.94
+        : nodeType === "relic"
         ? 0.88
         : nodeType === "miniboss"
           ? 0.76
@@ -1078,7 +1152,9 @@ function createRewardMaterials(regionId: RegionId, nodeType: WorldNodeType, dept
     }
 
     const bonusAdvancedChance =
-      nodeType === "relic"
+      nodeType === "boss"
+        ? 0.66
+        : nodeType === "relic"
         ? 0.55
         : nodeType === "miniboss"
           ? 0.44
@@ -1094,7 +1170,7 @@ function createRewardMaterials(regionId: RegionId, nodeType: WorldNodeType, dept
   if (
     ["desert", "oasis", "marsh", "swamp", "wetlands", "redwoodForest", "pineForest", "spiritMarsh"].includes(regionId) &&
     nodeType !== "merchant" &&
-    Math.random() < (nodeType === "miniboss" || nodeType === "relic" ? 0.52 : 0.34)
+    Math.random() < (nodeType === "boss" || nodeType === "miniboss" || nodeType === "relic" ? 0.52 : 0.34)
   ) {
     addMaterial(reward, "amber", 1);
   }
@@ -1145,6 +1221,10 @@ function pickNodeType(regionId: RegionId, depth: number, chapterIndex: number, r
     return "relic";
   }
 
+  if (depth >= 3 && depth <= MAX_DEPTH - 2 && Math.random() < 0.08) {
+    return "challenge";
+  }
+
   if (depth >= 2 && depth <= MAX_DEPTH - 1 && Math.random() < 0.16) {
     return "event";
   }
@@ -1161,9 +1241,11 @@ function createNodeTitle(regionId: RegionId, nodeType: WorldNodeType, depth: num
   const suffixes: Record<WorldNodeType, string[]> = {
     battle: ["Pass", "Path", "Front", "Track", "Line"],
     miniboss: ["Hunt", "Champion", "Break", "Trial", "Stand"],
+    boss: ["Boss"],
     event: ["Find", "Secret", "Discovery", "Turn", "Cache"],
     merchant: ["Market", "Tradepost", "Exchange", "Relay", "Broker"],
-    relic: ["Relic", "Vault", "Shrine", "Archive", "Cache"]
+    relic: ["Relic", "Vault", "Shrine", "Archive", "Cache"],
+    challenge: ["Vow", "Trial", "Rite", "Oath", "Shrine"]
   };
   const suffix = suffixes[nodeType][depth % suffixes[nodeType].length] ?? suffixes[nodeType][0];
   return `${region.name} ${suffix}`;
@@ -1179,11 +1261,28 @@ function createNodeSubtitle(regionId: RegionId, nodeType: WorldNodeType): string
       return region.hiddenEvent;
     case "relic":
       return `${region.theme} A relic route sits somewhere in this stretch.`;
+    case "challenge":
+      return `${region.theme} A shrine offers risk in exchange for a cursed reward.`;
     case "miniboss":
       return `${region.summary} Expect a tougher target and slightly richer spoils.`;
+    case "boss":
+      return `${region.theme} A true boss arena waits here.`;
     default:
       return `${region.theme} ${region.summary}`;
   }
+}
+
+function shouldSpawnRareBoss(chapterIndex: number): boolean {
+  if (chapterIndex === 0) {
+    return true;
+  }
+
+  if (chapterIndex < 2) {
+    return false;
+  }
+
+  const chance = Math.min(0.34, 0.16 + (chapterIndex - 2) * 0.06);
+  return Math.random() < chance;
 }
 
 function canTransitionTo(currentRegionId: RegionId, nextRegionId: RegionId): boolean {
@@ -1554,45 +1653,114 @@ export function generateWorldChapter(params: {
   nodeOrdinal: number;
   startWorldDepth: number;
   ownedRelicIds: RelicId[];
+  allowRareEvent: boolean;
+  allowSwordInTheStone: boolean;
 }): GeneratedWorldChapter {
-  const { chapterIndex, startRegionId, ownedRelicIds, startWorldDepth } = params;
+  const { chapterIndex, startRegionId, ownedRelicIds, startWorldDepth, allowRareEvent, allowSwordInTheStone } = params;
   let nodeOrdinal = params.nodeOrdinal;
   const nodes: Record<string, WorldNodeDefinition> = {};
   const nodeIds: string[] = [];
   let relicPlaced = false;
   let specialRegionPlaced = SPECIAL_REGIONS.has(startRegionId);
+  let challengePlaced = false;
+  let rareEventPlaced = false;
+  let swordInTheStonePlaced = false;
   const recentEnemyIdsByRegion = new Map<RegionId, EnemyId[]>();
   const historyByNodeId = new Map<string, RegionId[]>();
   const scatteredEliteDepths = chapterIndex === 0 ? [4, 8] : [4, 7, 9];
 
   const applyNodeType = (node: WorldNodeDefinition, type: WorldNodeType): void => {
     const regionRelicId = getRelicForRegion(node.regionId);
-    const shouldAttachRelic = type === "relic" && regionRelicId && !ownedRelicIds.includes(regionRelicId);
+    const bossId: BossId | undefined = type === "boss" ? rollBossIdForEncounter(node.regionId) : undefined;
+    const bossDefinition = bossId ? getBossDefinition(bossId) : null;
+    const resolvedType = type === "challenge" && challengePlaced ? "battle" : type;
+    const challengeId = resolvedType === "challenge" ? pickChallengeId() : undefined;
+    const challengeDefinition = challengeId ? getChallengeShrineDefinition(challengeId) : undefined;
+    const eventId =
+      resolvedType === "event"
+        ? pickRunEventId(node.regionId, node.depth, {
+            allowRareEvent: allowRareEvent && !rareEventPlaced,
+            allowSwordInTheStone: allowSwordInTheStone && !swordInTheStonePlaced
+          })
+        : undefined;
+    const eventDefinition = eventId ? getRunEventDefinition(eventId) : undefined;
+    const eliteTitleId = resolvedType === "miniboss" ? pickEliteTitleId() : undefined;
+    const eliteTitleDefinition = eliteTitleId ? getEliteTitleDefinition(eliteTitleId) : undefined;
+    const challengeRelicId = resolvedType === "challenge" ? pickChallengeRelicId(ownedRelicIds) : undefined;
+    const shouldAttachRelic = resolvedType === "relic" && regionRelicId && !ownedRelicIds.includes(regionRelicId);
     const enemyId =
-      type === "battle" || type === "miniboss"
+      resolvedType === "boss"
+        ? bossDefinition?.proxyEnemyId
+        : resolvedType === "battle" || resolvedType === "miniboss" || resolvedType === "challenge"
         ? pickEnemyForNode(node.regionId, recentEnemyIdsByRegion.get(node.regionId) ?? [])
         : undefined;
     const enemy = enemyId ? getEnemyDefinition(enemyId) : null;
+    const arenaEnvironmentId = pickArenaEnvironmentId(node.regionId, resolvedType);
+    const arenaEnvironment = arenaEnvironmentId ? getArenaEnvironmentDefinition(arenaEnvironmentId) : undefined;
 
-    node.type = type;
-    node.title = createNodeTitle(node.regionId, type, node.depth);
-    node.subtitle = createNodeSubtitle(node.regionId, type);
-    node.rewardMaterials = createRewardMaterials(node.regionId, type, node.depth, chapterIndex);
+    node.type = resolvedType;
+    node.title = bossDefinition
+      ? bossDefinition.name
+      : challengeDefinition
+        ? challengeDefinition.title
+        : eventDefinition?.title ?? (eliteTitleDefinition && enemy
+            ? `${eliteTitleDefinition.name} ${enemy.name}`
+            : createNodeTitle(node.regionId, resolvedType, node.depth));
+    node.subtitle =
+      bossDefinition
+        ? `${bossDefinition.typeName} - ${bossDefinition.arenaSubtitle}`
+        : challengeDefinition
+          ? `${challengeDefinition.ruleText}${arenaEnvironment ? ` Arena: ${arenaEnvironment.name}.` : ""}`
+          : eventDefinition?.summary ??
+            (eliteTitleDefinition
+              ? `${eliteTitleDefinition.summary}${arenaEnvironment ? ` Arena: ${arenaEnvironment.name}.` : ""}`
+              : createNodeSubtitle(node.regionId, resolvedType));
+    node.rewardMaterials = bossId
+      ? applyBossBonusRewards(createRewardMaterials(node.regionId, resolvedType, node.depth, chapterIndex), bossId)
+      : createRewardMaterials(node.regionId, resolvedType, node.depth, chapterIndex);
+    if (eliteTitleDefinition?.rewardBonus) {
+      for (const [materialId, amount] of Object.entries(eliteTitleDefinition.rewardBonus) as Array<[MaterialId, number | undefined]>) {
+        if (!amount) {
+          continue;
+        }
+
+        addMaterial(node.rewardMaterials, materialId, amount);
+      }
+    }
     node.enemyId = enemyId;
+    node.bossId = bossId;
+    node.eventId = eventId;
+    node.challengeId = challengeId;
+    node.eliteTitleId = eliteTitleId;
+    node.arenaEnvironmentId = arenaEnvironmentId;
     node.armor =
-      type === "battle" || type === "miniboss"
-        ? type === "miniboss" && enemy?.armor === "unarmored"
+      resolvedType === "boss"
+        ? bossDefinition?.armor
+        : resolvedType === "battle" || resolvedType === "miniboss" || resolvedType === "challenge"
+        ? resolvedType === "miniboss" && enemy?.armor === "unarmored"
           ? "light"
-          : enemy?.armor
+          : eliteTitleDefinition?.armorOverride ?? enemy?.armor
         : undefined;
     node.pattern = enemy?.pattern;
-    node.optional = type === "miniboss" && node.depth < MAX_DEPTH;
-    node.hidden = type === "event";
-    node.isBoss = type === "miniboss" && node.depth >= MAX_DEPTH - 1;
-    node.relicId = shouldAttachRelic ? regionRelicId : undefined;
+    node.optional = (resolvedType === "miniboss" || resolvedType === "challenge") && node.depth < MAX_DEPTH;
+    node.hidden = resolvedType === "event";
+    node.isBoss = resolvedType === "boss";
+    node.relicId = bossDefinition?.rewardRelicId ?? challengeRelicId ?? (shouldAttachRelic ? regionRelicId : undefined);
 
     if (shouldAttachRelic) {
       relicPlaced = true;
+    }
+
+    if (resolvedType === "challenge") {
+      challengePlaced = true;
+    }
+
+    if (eventDefinition?.rare) {
+      rareEventPlaced = true;
+    }
+
+    if (eventId === "swordInTheStone") {
+      swordInTheStonePlaced = true;
     }
 
     if (enemyId) {
@@ -1626,7 +1794,12 @@ export function generateWorldChapter(params: {
       optional: false,
       hidden: false,
       isBoss: false,
-      relicId: undefined
+      bossId: undefined,
+      eventId: undefined,
+      relicId: undefined,
+      eliteTitleId: undefined,
+      challengeId: undefined,
+      arenaEnvironmentId: undefined
     };
 
     applyNodeType(node, type);
@@ -1802,12 +1975,36 @@ export function generateWorldChapter(params: {
     eliteNode.nextNodeIds = [];
   }
 
+  let spawnedRareBoss = false;
+
+  if (finalEliteNodes.length > 0 && shouldSpawnRareBoss(chapterIndex)) {
+    const bossGateway =
+      [...finalEliteNodes].sort((left, right) => Math.abs(left.lane - 3) - Math.abs(right.lane - 3))[0] ?? finalEliteNodes[0];
+
+    if (bossGateway) {
+      const parentHistory = historyByNodeId.get(bossGateway.id) ?? [bossGateway.regionId];
+      const bossRegionId = chooseTransitionRegion(
+        bossGateway.regionId,
+        MAX_DEPTH + 2,
+        chapterIndex,
+        true,
+        parentHistory,
+        []
+      );
+      const bossNode = createNode(bossRegionId, "boss", bossGateway.lane, MAX_DEPTH + 2, parentHistory);
+      bossGateway.nextNodeIds = [bossNode.id];
+      bossNode.nextNodeIds = [];
+      spawnedRareBoss = true;
+    }
+  }
+
   return {
     nodeIds,
     nodes,
     startNodeIds: [firstNode.id],
     nextNodeOrdinal: nodeOrdinal,
-    nextWorldDepth: startWorldDepth + MAX_DEPTH + 2
+    nextWorldDepth: startWorldDepth + MAX_DEPTH + (spawnedRareBoss ? 3 : 2),
+    spawnedRareEvent: rareEventPlaced
   };
 }
 
@@ -1826,8 +2023,12 @@ function shuffleOffsets(offsets: number[]): number[] {
 
 export function resolveWorldEncounter(node: WorldNodeDefinition, levelNumber: number, expeditionTier: number): EncounterConfig {
   const region = EXPEDITION_REGIONS[node.regionId];
-  const enemy = getEnemyDefinition(node.enemyId ?? BIOME_ENEMY_POOLS[node.regionId][0]);
-  const boss = Boolean(node.isBoss);
+  const bossDefinition = node.type === "boss" && node.bossId ? getBossDefinition(node.bossId) : null;
+  const eliteTitleDefinition = node.eliteTitleId ? getEliteTitleDefinition(node.eliteTitleId) : null;
+  const challengeDefinition = node.challengeId ? getChallengeShrineDefinition(node.challengeId) : null;
+  const arenaEnvironment = node.arenaEnvironmentId ? getArenaEnvironmentDefinition(node.arenaEnvironmentId) : null;
+  const enemy = getEnemyDefinition(node.enemyId ?? bossDefinition?.proxyEnemyId ?? BIOME_ENEMY_POOLS[node.regionId][0]);
+  const boss = Boolean(bossDefinition);
   const depthWeight = node.depth * 0.8 + expeditionTier * 0.9;
   const lateGamePressure = Math.max(0, expeditionTier - 1);
   const hazardPressure = SPECIAL_REGIONS.has(node.regionId) ? 0.9 : HAZARDOUS_REGIONS.has(node.regionId) ? 0.45 : 0;
@@ -1848,53 +2049,81 @@ export function resolveWorldEncounter(node: WorldNodeDefinition, levelNumber: nu
         ? 0.25
         : 0;
   const challengeWeight = Math.max(0, depthWeight + lateGamePressure * 0.45 + hazardPressure - openingRelief);
-  const eliteHpScale = boss ? 1.16 : node.type === "miniboss" ? 1.1 : 1;
+  const eliteHpScale =
+    (boss ? 1.2 : node.type === "miniboss" ? 1.1 : node.type === "challenge" ? 1.08 : 1) *
+    (eliteTitleDefinition?.hpMultiplier ?? 1);
   const baseEnemyHp =
-    (enemy.maxHp +
+    ((bossDefinition ? bossDefinition.phaseHp[0] : enemy.maxHp) +
       challengeWeight * 8 +
-      lateGamePressure * (boss ? 6 : node.type === "miniboss" ? 5 : 4) +
-      (boss ? 18 : node.type === "miniboss" ? 10 : 0) -
+      lateGamePressure * (boss ? 0 : node.type === "miniboss" ? 5 : node.type === "challenge" ? 4 : 4) +
+      (boss ? 0 : node.type === "miniboss" ? 10 : node.type === "challenge" ? 8 : 0) -
       (expeditionTier === 0 && !boss ? (node.depth <= 1 ? 8 : node.depth <= 3 ? 4 : 0) : 0)) *
-    lateGameHardening;
+    (boss ? 1 : lateGameHardening);
 
   return {
     levelNumber,
-    title: `${region.name} - ${node.title}`,
-    subtitle: node.subtitle,
+    title: bossDefinition ? `${bossDefinition.name} - ${bossDefinition.arenaTitle}` : `${region.name} - ${node.title}`,
+    subtitle: bossDefinition ? bossDefinition.arenaSubtitle : node.subtitle,
     regionId: region.id,
-    regionName: region.name,
+    regionName: bossDefinition?.arenaTitle ?? region.name,
     nodeType: node.type,
-    enemyRoster: region.enemyRoster,
-    armor: node.armor ?? enemy.armor,
-    enemyHp: Math.round(baseEnemyHp * eliteHpScale),
-    enemySpeed: Math.round((enemy.speed + challengeWeight * 4 + lateGamePressure + (boss ? 6 : 0)) * lateGameMobilityScale),
+    bossId: bossDefinition?.id,
+    bossName: bossDefinition?.name,
+    bossIntro: bossDefinition?.intro,
+    bossLesson: bossDefinition?.lesson,
+    bossCoreRule: bossDefinition?.coreRule,
+    bossRewardRelicId: node.relicId,
+    bossPhaseHp: bossDefinition?.phaseHp,
+    rewardRelicId: node.relicId,
+    eliteTitleId: eliteTitleDefinition?.id,
+    eliteTitleName: eliteTitleDefinition?.name,
+    challengeId: challengeDefinition?.id,
+    challengeName: challengeDefinition?.title,
+    challengeRuleText: challengeDefinition?.ruleText,
+    arenaEnvironmentId: arenaEnvironment?.id,
+    arenaEnvironmentName: arenaEnvironment?.name,
+    enemyRoster: bossDefinition ? [bossDefinition.name, bossDefinition.typeName] : region.enemyRoster,
+    armor: bossDefinition?.armor ?? eliteTitleDefinition?.armorOverride ?? node.armor ?? enemy.armor,
+    enemyHp: bossDefinition ? bossDefinition.phaseHp[0] : Math.round(baseEnemyHp * eliteHpScale),
+    enemySpeed: Math.round(
+      (((bossDefinition?.speed ?? enemy.speed) + challengeWeight * 4 + lateGamePressure + (boss ? 4 : 0)) *
+        (eliteTitleDefinition?.speedMultiplier ?? 1)) *
+        lateGameMobilityScale
+    ),
     enemyAcceleration: Math.round(
-      (enemy.acceleration + challengeWeight * 42 + lateGamePressure * 16 + (boss ? 60 : 0)) * lateGameMobilityScale
+      (((bossDefinition?.acceleration ?? enemy.acceleration) + challengeWeight * 42 + lateGamePressure * 16 + (boss ? 40 : 0)) *
+        (eliteTitleDefinition?.accelerationMultiplier ?? 1)) *
+        lateGameMobilityScale
     ),
     enemyId: enemy.id,
     enemyDamageBonus: Math.max(
       0,
-      Math.round((challengeWeight * 0.9 + lateGamePressure * 0.3 + (boss ? 2 : 0) - openingRelief * 0.55) * lateGameDamageScale)
+      Math.round(
+        (challengeWeight * 0.9 + lateGamePressure * 0.3 + (boss ? 1 : 0) - openingRelief * 0.55) * lateGameDamageScale +
+          (eliteTitleDefinition?.damageBonus ?? 0)
+      )
     ),
     enemyAggression: Math.min(
       1.22,
       Math.max(
         0.58,
         enemy.aggression +
+          ((bossDefinition?.aggression ?? enemy.aggression) - enemy.aggression) +
           node.depth * 0.032 +
           expeditionTier * 0.02 +
           lateGamePressure * 0.02 +
           hazardPressure * 0.02 +
-          (boss ? 0.06 : 0) +
+          (boss ? 0.03 : 0) +
+          (eliteTitleDefinition?.aggressionDelta ?? 0) +
           (lateGameHardening - 1) * 0.22 -
           openingRelief * 0.05
       )
     ),
     dropCount: Object.values(node.rewardMaterials).reduce((sum, value) => sum + (value ?? 0), 0),
-    arenaFill: region.fill,
-    arenaEdge: region.edge,
-    enemyTint: enemy.accent,
-    enemySize: enemy.size + (boss ? 4 : node.type === "miniboss" ? 2 : 0),
+    arenaFill: bossDefinition?.fill ?? region.fill,
+    arenaEdge: bossDefinition?.edge ?? region.edge,
+    enemyTint: bossDefinition?.accent ?? enemy.accent,
+    enemySize: bossDefinition?.size ?? enemy.size + (node.type === "miniboss" ? 2 : 0),
     pattern: node.pattern ?? enemy.pattern,
     rewardMaterials: node.rewardMaterials,
     optional: node.optional

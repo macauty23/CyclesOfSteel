@@ -97,62 +97,38 @@ const TUTORIAL_WORLD_ROUTE: TutorialNodeSeed[] = [
 export const TUTORIAL_WORLD_MAP_PAGES: GuidedOverlayPage[] = [
   {
     title: "Tutorial Route",
-    body:
-      "This tutorial follows a fixed path: Plains, Savannah, Volcanic Lands, Lava Fields, and Volcano. The route does not branch, so you can focus on learning the systems step by step.",
+    body: "This route is fixed. Follow the highlighted node and learn one new idea at each stop.",
     accent: 0x6e9bc8
   },
   {
-    title: "How To Travel",
-    body:
-      "The highlighted node is always the next step. Select it with the mouse, then press the on-screen Next Stage button. Each area provides different materials for upgrades.",
+    title: "Map Basics",
+    body: "Click the open node, then enter it. Materials from each stop feed the forge and the tech tree after combat.",
     accent: 0x87b86f
   }
 ];
 
 export const TUTORIAL_FORGE_PAGES: GuidedOverlayPage[] = [
   {
-    title: "Upgrade Screen",
-    body:
-      "After each fight, you return here. Offers are small permanent trinkets for the run. Training is also permanent for the run and changes how combat behaves, not just your raw numbers.",
+    title: "Forge Loop",
+    body: "After each fight you return here. Offers and Training shape the current run, not just raw stats.",
     accent: 0x7b69a8
   },
   {
-    title: "Enchantments And Fittings",
-    body:
-      "Enchantments cost 2 Essence and stay on the weapon when you upgrade into a new sword. Modification lets you rework the blade, guard, pommel, hilt, and tip.",
-    accent: 0x8c9db4
-  },
-  {
     title: "Next Step",
-    body:
-      "Open the full tech tree before continuing. This is where you choose a branch, spend materials, and change your weapon into a new upgrade.",
+    body: "Open the tech tree before continuing. Enchantments and fittings stay focused on your weapon path.",
     accent: 0xc79353
   }
 ];
 
 export const TUTORIAL_TECH_TREE_PAGES: GuidedOverlayPage[] = [
   {
-    title: "Weapon Branches",
-    body:
-      "You start with the Arming Sword. Unlocking a node changes your current weapon into that upgrade, so each choice affects the way your weapon behaves.",
+    title: "Pick A Branch",
+    body: "Unlocking a node changes your current sword into that upgrade. Your branch is your build.",
     accent: 0x8aa0b3
   },
   {
-    title: "Branch Locks",
-    body:
-      "Once you choose one child on a branch, the sibling options on that split are locked. Look around first, then click when you are sure.",
-    accent: 0xc79353
-  },
-  {
-    title: "Costs And Materials",
-    body:
-      "Early upgrades mostly use steel and wood. Later upgrades also require rarer materials. When you can afford a node, click it to unlock that upgrade.",
-    accent: 0x7bc18e
-  },
-  {
-    title: "Click To Choose",
-    body:
-      "Selections are click-based. Hovering only highlights what you are looking at, while clicking commits the node or fitting you want.",
+    title: "Commit Carefully",
+    body: "Branch splits lock siblings. Check costs, click the node you want, then return to the route.",
     accent: 0x9f855f
   }
 ];
@@ -160,8 +136,7 @@ export const TUTORIAL_TECH_TREE_PAGES: GuidedOverlayPage[] = [
 export const TUTORIAL_COMPLETION_PAGES: GuidedOverlayPage[] = [
   {
     title: "Tutorial Complete",
-    body:
-      "You have completed the tutorial path and seen the main combat and progression systems. You can now return to the main menu and start a normal run.",
+    body: "You have seen map movement, combat, bind timing, the forge, and the tech tree. Normal runs now open from the main menu.",
     accent: 0xc79353
   }
 ];
@@ -169,77 +144,36 @@ export const TUTORIAL_COMPLETION_PAGES: GuidedOverlayPage[] = [
 const TUTORIAL_COMBAT_PAGES: Record<string, GuidedOverlayPage[]> = {
   "tutorial-plains": [
     {
-      title: "Movement And Guard",
-      body:
-        "Move with WASD or the arrow keys. Dash with Shift or Space. Stay at a controlled distance and avoid rushing straight forward without a reason.",
-      accent: 0x6f95c1
-    },
-    {
-      title: "Attacks And Measure",
-      body:
-        "J or left mouse is the quicker attack. K or right mouse is the more committed attack. Use the spacing cue to attack from an effective distance.",
-      accent: 0xc79353
-    },
-    {
-      title: "Stamina And Tempo",
-      body:
-        "Every dash and attack costs stamina. If you empty the bar, you become easy to punish. Let it recover between exchanges and think in tempos, not button spam.",
+      title: "Move First",
+      body: "Move with WASD or arrows. Dash with Shift or Space. Attack with J/LMB or K/RMB, but only when you are in measure.",
       accent: 0x7bc18e
     }
   ],
   "tutorial-savannah": [
     {
-      title: "Dash And Bind",
-      body:
-        "Press Q during incoming impact to bind. A successful bind avoids the damage, reflects part of it, and briefly stuns the attacker. Ranged attacks are easier to bind.",
-      accent: 0xc79353
-    },
-    {
-      title: "Positional Risk",
-      body:
-        "Dashes are strong, but they also change your position. Use them to create space, close distance, or escape recovery instead of using them constantly.",
+      title: "Bind And Stamina",
+      body: "Press Q on impact to bind. Dashes and attacks spend stamina, so recover before forcing another exchange.",
       accent: 0x8db56d
     }
   ],
   "tutorial-volcanic-land": [
     {
-      title: "Commit Weight",
-      body:
-        "Larger attacks carry more commitment. They move farther and recover more slowly, so use them when you have space and timing on your side.",
-      accent: 0xd18463
-    },
-    {
-      title: "Combo Rules",
-      body:
-        "The combo system changes combat behavior instead of only increasing damage. Flow, Press, and Dominion affect spacing and control, so timing matters more than repeated input.",
+      title: "Commitment",
+      body: "Heavy attacks move farther and recover slower. Use them after a clean read, not from panic.",
       accent: 0xb88a5c
     }
   ],
   "tutorial-lava-fields": [
     {
-      title: "Attack Classes",
-      body:
-        "Some attacks work like lunges and control a straight line. Others work like cleaves and cover a wider arc. Use the attack class that fits the situation.",
-      accent: 0xde8c64
-    },
-    {
-      title: "Armor And Knockback",
-      body:
-        "Armor affects which attacks are effective. Thrusting is safer against protected targets, and knockback can move a target, interrupt actions, or reduce control.",
+      title: "Armor And Projectiles",
+      body: "Projectiles can be bound. Against armor, cleaner thrusts and committed punishes work better than wild swings.",
       accent: 0x8ba3b6
     }
   ],
   [TUTORIAL_FINAL_NODE_ID]: [
     {
-      title: "Final Tutorial Fight",
-      body:
-        "This final fight expects better spacing, stamina management, and bind timing. Watch the windup, attack at the correct distance, and do not overcommit after a miss.",
-      accent: 0xe09a5f
-    },
-    {
-      title: "Complete The Tutorial",
-      body:
-        "Defeat this enemy and collect the materials to complete the tutorial. After that, you can start a normal run without the tutorial prompt in this session.",
+      title: "Use Everything",
+      body: "Watch the windup, bind when it is clean, and reset after a miss. Win the duel, collect the drops, and the tutorial is done.",
       accent: 0xc79353
     }
   ]

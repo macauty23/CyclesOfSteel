@@ -3,6 +3,12 @@ import { gameManager } from "../core/GameManager";
 import { SCENE_KEYS } from "../core/SceneKeys";
 import type { MaterialCost, RegionId, WorldNodeDefinition } from "../core/types";
 import { MATERIAL_LABELS, formatMaterialCost, formatMaterialInventory, materialCostEntries } from "../data/materials";
+import { getArenaEnvironmentDefinition } from "../data/arenaEnvironments";
+import { getBossDefinition } from "../data/bosses";
+import { getChallengeShrineDefinition } from "../data/challengeShrines";
+import { RELICS } from "../data/relics";
+import { RUN_MODIFIERS } from "../data/runModifiers";
+import { getRunEventDefinition, type RunEventChoice } from "../data/runEvents";
 import {
   TUTORIAL_PROMPT_IDS,
   TUTORIAL_WORLD_MAP_PAGES
@@ -13,6 +19,7 @@ import { applyLocalizedText, localizeTextStyle } from "../ui/localization";
 import { COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
 
 interface NodeCardHandle {
+  flare: Phaser.GameObjects.Ellipse;
   background: Phaser.GameObjects.Rectangle;
   title: Phaser.GameObjects.Text;
   subtitle: Phaser.GameObjects.Text;
@@ -58,8 +65,11 @@ export class WorldMapScene extends Phaser.Scene {
   private travelHintText!: Phaser.GameObjects.Text;
   private travelButton: ButtonHandle | null = null;
   private merchantOverlay: Phaser.GameObjects.Container | null = null;
+  private eventOverlay: Phaser.GameObjects.Container | null = null;
   private runMenuOverlay: Phaser.GameObjects.Container | null = null;
   private tutorialOverlay: GuidedOverlayHandle | null = null;
+  private lastTestModeEnterNodeId = "";
+  private lastTestModeEnterAt = -Infinity;
 
   constructor() {
     super(SCENE_KEYS.WorldMap);
@@ -71,9 +81,12 @@ export class WorldMapScene extends Phaser.Scene {
     this.selectedNodeId = available[0]?.id ?? visibleNodes[0]?.id ?? "";
     this.nodeCards.clear();
     this.merchantOverlay = null;
+    this.eventOverlay = null;
     this.runMenuOverlay = null;
     this.tutorialOverlay = null;
     this.travelButton = null;
+    this.lastTestModeEnterNodeId = "";
+    this.lastTestModeEnterAt = -Infinity;
 
     this.dragBounds = this.paintBackdrop(visibleNodes);
     this.createDragSurface();
@@ -238,6 +251,7 @@ export class WorldMapScene extends Phaser.Scene {
         .rectangle(position.x, position.y, 112, 68, 0xffffff, 0.001)
         .setInteractive({ useHandCursor: true })
         .setDepth(4);
+      const flare = this.add.ellipse(position.x, position.y, 116, 74, 0xd9b67a, 0.08).setDepth(1.5);
       const background = this.add
         .rectangle(position.x, position.y, 100, 58, COLORS.panelSoft, 0.96)
         .setDepth(2)
@@ -263,6 +277,7 @@ export class WorldMapScene extends Phaser.Scene {
       });
 
       this.nodeCards.set(node.id, {
+        flare,
         background,
         title,
         subtitle,
@@ -343,7 +358,12 @@ export class WorldMapScene extends Phaser.Scene {
     const stats = gameManager.getCombatStats();
     const visibleNodes = gameManager.getCurrentChapterWorldNodeDefinitions();
     const selectedNode = gameManager.getWorldNodeDefinition(this.selectedNodeId) ?? visibleNodes[0] ?? null;
-    const trainingCount = gameManager.getOwnedRunModifierDefinitions().length;
+    const ownedTraining = gameManager.getOwnedRunModifierDefinitions();
+    const latestTraining = ownedTraining.slice(-2).map((modifier) => modifier.name);
+    const trainingLabel =
+      latestTraining.length === 0
+        ? "None"
+        : latestTraining.join(", ") + (ownedTraining.length > latestTraining.length ? ` +${ownedTraining.length - latestTraining.length}` : "");
 
     if (!selectedNode && visibleNodes[0]) {
       this.selectedNodeId = visibleNodes[0].id;
@@ -356,7 +376,7 @@ export class WorldMapScene extends Phaser.Scene {
         "",
         formatMaterialInventory(state.materials),
         "",
-        `Training: ${trainingCount}`
+        `Training: ${trainingLabel}`
       ].join("\n")
     );
 
@@ -372,22 +392,50 @@ export class WorldMapScene extends Phaser.Scene {
       const visited = state.visitedNodeIds.includes(node.id);
       const selected = node.id === this.selectedNodeId;
       const special = WorldMapScene.SPECIAL_REGION_IDS.has(node.regionId);
+      const boss = node.type === "boss";
+      const challenge = node.type === "challenge";
       const fill = selected ? region.accent : available ? region.fill + 0x0b1010 : visited ? 0x243341 : COLORS.disabled;
       const alpha = available || selected ? 1 : visited ? 0.78 : 0.52;
 
+      handle.flare.setVisible(boss || challenge);
+      handle.flare.setFillStyle(
+        boss ? (selected ? COLORS.gold : region.accent) : selected ? 0xe3c07a : 0xc19a57,
+        selected ? 0.28 : available ? 0.18 : 0.1
+      );
+      handle.flare.setAlpha(alpha);
       handle.background.setFillStyle(fill, selected ? 0.96 : 0.9);
       handle.background.setStrokeStyle(
-        special && (available || visited || selected) ? 3 : 2,
-        selected ? COLORS.gold : available ? (special ? COLORS.gold : region.edge) : special ? region.accent : COLORS.panelEdge,
+        boss ? 4 : challenge ? 3 : special && (available || visited || selected) ? 3 : 2,
+        boss
+          ? selected
+            ? COLORS.gold
+            : available
+              ? 0xf0d7a3
+              : 0xb79663
+          : challenge
+            ? selected
+              ? COLORS.gold
+              : 0xd3b178
+          : selected
+            ? COLORS.gold
+            : available
+              ? special
+                ? COLORS.gold
+                : region.edge
+              : special
+                ? region.accent
+                : COLORS.panelEdge,
         available || selected ? 1 : 0.45
       );
       handle.background.setAlpha(alpha);
       handle.title.setText(node.title);
       handle.subtitle.setText(this.getNodeSubtitle(node));
       handle.title.setColor(available || selected ? colorHex(COLORS.ink) : "#8b98a4");
-      handle.subtitle.setColor(available || selected ? colorHex(COLORS.subtext) : "#66727d");
-      handle.tag.setText("");
-      handle.tag.setAlpha(0);
+      handle.subtitle.setColor(
+        boss ? colorHex(COLORS.gold) : challenge ? "#e1c489" : available || selected ? colorHex(COLORS.subtext) : "#66727d"
+      );
+      handle.tag.setText(boss ? "BOSS" : challenge ? "VOW" : node.type === "miniboss" ? "Elite" : "");
+      handle.tag.setAlpha(boss || challenge || node.type === "miniboss" ? 1 : 0);
     }
 
     if (!selectedNode) {
@@ -403,6 +451,13 @@ export class WorldMapScene extends Phaser.Scene {
     const region = gameManager.getRegionDefinition(selectedNode.regionId);
     const available = gameManager.canTravelToWorldNode(selectedNode.id);
     const routeTargets = this.getRouteTargets(selectedNode);
+    const bossDefinition = selectedNode.bossId ? getBossDefinition(selectedNode.bossId) : null;
+    const challengeDefinition = selectedNode.challengeId ? getChallengeShrineDefinition(selectedNode.challengeId) : null;
+    const arenaEnvironment = selectedNode.arenaEnvironmentId ? getArenaEnvironmentDefinition(selectedNode.arenaEnvironmentId) : null;
+    const eventDefinition = selectedNode.eventId ? getRunEventDefinition(selectedNode.eventId) : undefined;
+    const eventTraining = eventDefinition?.choices
+      .map((choice) => (choice.modifierId ? RUN_MODIFIERS[choice.modifierId]?.name : null))
+      .filter((entry): entry is string => Boolean(entry));
 
     this.detailTitleText.setText(selectedNode.title);
     this.detailText.setText(
@@ -411,13 +466,25 @@ export class WorldMapScene extends Phaser.Scene {
         region.theme,
         region.summary,
         "",
+        selectedNode.type === "boss" && bossDefinition ? `Lesson: ${bossDefinition.lesson}` : "",
+        selectedNode.type === "boss" && bossDefinition ? `Core rule: ${bossDefinition.coreRule}` : "",
+        selectedNode.type === "boss" && selectedNode.relicId ? `Boss reward: ${RELICS[selectedNode.relicId]?.name ?? "Unique relic"}` : "",
+        selectedNode.type === "challenge" && challengeDefinition ? `Vow: ${challengeDefinition.ruleText}` : "",
+        selectedNode.type === "challenge" && selectedNode.relicId ? `Cursed reward: ${RELICS[selectedNode.relicId]?.name ?? "Cursed relic"}` : "",
+        selectedNode.type === "event" && eventDefinition ? `Surprise: ${eventDefinition.summary}` : "",
+        selectedNode.type === "event" && (eventTraining?.length ?? 0) > 0 ? `Possible training: ${eventTraining?.join(", ")}` : "",
         `Rewards: ${formatMaterialCost(selectedNode.rewardMaterials)}`,
         `Primary materials: ${region.primaryMaterials.map((id) => MATERIAL_LABELS[id]).join(", ")}`,
-        selectedNode.type === "battle" || selectedNode.type === "miniboss"
-          ? `Enemy roster: ${region.enemyRoster.join(", ")}`
-          : `Site: ${this.describeNodeType(selectedNode)}`,
+        arenaEnvironment ? `Arena condition: ${arenaEnvironment.name} - ${arenaEnvironment.summary}` : "",
+        selectedNode.type === "boss"
+          ? `Boss arena: ${bossDefinition?.arenaTitle ?? selectedNode.title}`
+          : selectedNode.type === "battle" || selectedNode.type === "miniboss" || selectedNode.type === "challenge"
+            ? `Enemy roster: ${region.enemyRoster.join(", ")}`
+            : `Site: ${this.describeNodeType(selectedNode)}`,
         routeTargets.length > 0 ? `Useful for: ${routeTargets.join(", ")}` : "Useful for: General expedition stock"
-      ].join("\n")
+      ]
+        .filter((entry) => entry.length > 0)
+        .join("\n")
     );
 
     this.travelHintText.setText("");
@@ -427,33 +494,42 @@ export class WorldMapScene extends Phaser.Scene {
         ? "Select an open route"
         : selectedNode.type === "merchant"
           ? "Open trade"
-          : selectedNode.type === "battle" || selectedNode.type === "miniboss"
-            ? "Enter combat"
+          : selectedNode.type === "event"
+            ? "Choose outcome"
+          : selectedNode.type === "boss"
+            ? "Enter boss arena"
+            : selectedNode.type === "battle" || selectedNode.type === "miniboss" || selectedNode.type === "challenge"
+              ? "Enter combat"
             : "Resolve route"
     );
     this.travelButton?.setEnabled(available);
   }
 
-  private handleSelectedNode(): void {
-    if (this.tutorialOverlay || this.merchantOverlay || this.runMenuOverlay) {
+  private handleSelectedNode(forceTravel = false): void {
+    if (this.tutorialOverlay || this.merchantOverlay || this.eventOverlay || this.runMenuOverlay) {
       return;
     }
 
     const node = gameManager.getWorldNodeDefinition(this.selectedNodeId);
 
-    if (!node || !gameManager.canTravelToWorldNode(node.id)) {
+    if (!node || (!forceTravel && !gameManager.canTravelToWorldNode(node.id))) {
       this.feedbackText.setText("That route is not open yet.");
       this.refreshView();
       return;
     }
 
-    if (node.type === "battle" || node.type === "miniboss") {
-      gameManager.startWorldNode(this, node.id);
+    if (node.type === "battle" || node.type === "miniboss" || node.type === "boss" || node.type === "challenge") {
+      gameManager.startWorldNode(this, node.id, forceTravel);
       return;
     }
 
     if (node.type === "merchant") {
       this.openMerchantOverlay(node);
+      return;
+    }
+
+    if (node.type === "event") {
+      this.openEventOverlay(node);
       return;
     }
 
@@ -559,6 +635,129 @@ export class WorldMapScene extends Phaser.Scene {
     this.merchantOverlay = container;
   }
 
+  private openEventOverlay(node: WorldNodeDefinition): void {
+    this.eventOverlay?.destroy();
+
+    const eventDefinition = node.eventId ? getRunEventDefinition(node.eventId) : undefined;
+
+    if (!eventDefinition) {
+      if (gameManager.resolveWorldNodeVisit(node.id)) {
+        this.feedbackText.setText("Route resolved. Back to the forge.");
+        gameManager.openForge(this);
+      } else {
+        this.feedbackText.setText("That route could not be resolved.");
+        this.refreshView();
+      }
+      return;
+    }
+
+    const veil = this.add
+      .rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, VIEWPORT.width, VIEWPORT.height, 0x060a10, 0.74)
+      .setScrollFactor(0);
+    const panel = this.add
+      .rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, 560, 390, COLORS.panel, 0.98)
+      .setStrokeStyle(2, eventDefinition.accent, 0.96)
+      .setScrollFactor(0);
+    const title = this.add.text(VIEWPORT.width * 0.5, 204, eventDefinition.title, TEXT.heading).setOrigin(0.5).setScrollFactor(0);
+    const copy = this.add
+      .text(
+        VIEWPORT.width * 0.5,
+        248,
+        `${eventDefinition.summary}\n\nRoute salvage: ${formatMaterialCost(node.rewardMaterials)}`,
+        { ...TEXT.small, align: "center", color: colorHex(COLORS.subtext) }
+      )
+      .setOrigin(0.5)
+      .setWordWrapWidth(460)
+      .setScrollFactor(0);
+
+    const container = this.add.container(0, 0, [veil, panel, title, copy]);
+    container.setDepth(40).setScrollFactor(0);
+    [veil, panel, title, copy].forEach((entry) => entry.setDepth(40));
+
+    eventDefinition.choices.forEach((choice, index) => {
+      const y = 360 + index * 108;
+      const rewardLabel = formatMaterialCost(choice.reward);
+      const modifierName = choice.modifierId ? RUN_MODIFIERS[choice.modifierId]?.name ?? "Training" : null;
+      const upgradeLabel = choice.upgradeSwordId ? `Upgrade into ${choice.upgradeSwordId === "excalibur" ? "Excalibur" : choice.upgradeSwordId}` : null;
+      const detail = this.add
+        .text(
+          VIEWPORT.width * 0.5,
+          y - 42,
+          [
+            materialCostEntries(choice.payment).length > 0 ? `Pay ${formatMaterialCost(choice.payment)}` : "No payment",
+            `Gain ${rewardLabel}`,
+            modifierName ? `Plus ${modifierName}` : "",
+            upgradeLabel ?? ""
+          ]
+            .filter((entry) => entry.length > 0)
+            .join("  |  "),
+          { ...TEXT.caption, align: "center", color: colorHex(COLORS.gold) }
+        )
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(41);
+      container.add(detail);
+
+      const button = createButton({
+        scene: this,
+        x: VIEWPORT.width * 0.5,
+        y,
+        width: 360,
+        height: 62,
+        label: choice.name,
+        hint: choice.hint,
+        accent: index === 0 ? 0x4a5f72 : 0x4f5f45,
+        scrollFactor: 0,
+        onClick: () => this.resolveEventChoice(node, choice, container)
+      });
+      button.setEnabled(
+        gameManager.canAfford(choice.payment) &&
+          (!choice.upgradeSwordId || gameManager.canUpgradeCurrentSwordToLegendary(choice.upgradeSwordId))
+      );
+      button.root.setDepth(41);
+      container.add(button.root);
+    });
+
+    const closeButton = createButton({
+      scene: this,
+      x: VIEWPORT.width * 0.5,
+      y: 632,
+      width: 150,
+      height: 52,
+      label: "Close",
+      hint: "Choose later",
+      accent: 0x394554,
+      scrollFactor: 0,
+      onClick: () => {
+        container.destroy();
+        this.eventOverlay = null;
+      }
+    });
+    closeButton.root.setDepth(41);
+    container.add(closeButton.root);
+
+    this.eventOverlay = container;
+  }
+
+  private resolveEventChoice(node: WorldNodeDefinition, choice: RunEventChoice, container: Phaser.GameObjects.Container): void {
+    if (gameManager.resolveRunEvent(node.id, choice.payment, choice.reward, choice.modifierId, choice.upgradeSwordId)) {
+      container.destroy();
+      this.eventOverlay = null;
+      this.feedbackText.setText(
+        choice.upgradeSwordId
+          ? "The sword answered your hand. Back to the forge."
+          : choice.modifierId
+            ? "Event resolved. New training added."
+            : "Event resolved. Back to the forge."
+      );
+      gameManager.openForge(this);
+      return;
+    }
+
+    this.feedbackText.setText("Not enough materials for that choice.");
+    this.refreshView();
+  }
+
   private openRunMenu(): void {
     this.runMenuOverlay?.destroy();
     this.isDragging = false;
@@ -659,6 +858,30 @@ export class WorldMapScene extends Phaser.Scene {
         return;
       }
 
+      const node = gameManager.getWorldNodeDefinition(this.selectedNodeId);
+
+      if (
+        gameManager.isTestModeEnabled() &&
+        node &&
+        (node.type === "battle" || node.type === "miniboss" || node.type === "boss") &&
+        !gameManager.canTravelToWorldNode(node.id)
+      ) {
+        const now = this.time.now;
+        const repeatedSelection = this.lastTestModeEnterNodeId === node.id && now - this.lastTestModeEnterAt <= 650;
+        this.lastTestModeEnterNodeId = node.id;
+        this.lastTestModeEnterAt = now;
+
+        if (repeatedSelection) {
+          this.handleSelectedNode(true);
+        } else {
+          this.feedbackText.setText("Test Mode: press Enter again to jump into this node.");
+          this.refreshView();
+        }
+        return;
+      }
+
+      this.lastTestModeEnterNodeId = node?.id ?? "";
+      this.lastTestModeEnterAt = this.time.now;
       this.handleSelectedNode();
     });
   }
@@ -1134,6 +1357,14 @@ export class WorldMapScene extends Phaser.Scene {
       return "Event";
     }
 
+    if (node.type === "challenge") {
+      return "Challenge";
+    }
+
+    if (node.type === "boss") {
+      return "Boss";
+    }
+
     return node.type === "miniboss" ? "Elite" : "Battle";
   }
 
@@ -1145,8 +1376,12 @@ export class WorldMapScene extends Phaser.Scene {
         return "Relic site";
       case "event":
         return "Hidden event";
+      case "challenge":
+        return "Challenge shrine";
       case "miniboss":
         return "Optional hunt";
+      case "boss":
+        return "Boss arena";
       default:
         return "Combat route";
     }

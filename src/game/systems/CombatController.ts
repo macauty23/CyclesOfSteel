@@ -31,7 +31,9 @@ interface CombatControllerConfig {
   pointer: Phaser.Input.Pointer;
   stats: CombatStats;
   prepareAttackSignal?: (signal: AttackExecutionSignal) => AttackExecutionSignal;
-  onActionRejected?: (reason: "stamina") => void;
+  canStartDash?: () => boolean;
+  canStartAttack?: (kind: AttackKind) => boolean;
+  onActionRejected?: (reason: "stamina" | "challenge") => void;
   onAttackActive: (signal: AttackExecutionSignal) => void;
   onAttackEnded: (signal: AttackExecutionSignal) => void;
   onDashStart?: (direction: { x: number; y: number }) => void;
@@ -45,7 +47,9 @@ export class CombatController {
   private readonly keys: ControlKeys;
   private readonly cursors: Partial<Phaser.Types.Input.Keyboard.CursorKeys>;
   private readonly prepareAttackSignal?: (signal: AttackExecutionSignal) => AttackExecutionSignal;
-  private readonly onActionRejected?: (reason: "stamina") => void;
+  private readonly canStartDash?: () => boolean;
+  private readonly canStartAttack?: (kind: AttackKind) => boolean;
+  private readonly onActionRejected?: (reason: "stamina" | "challenge") => void;
   private readonly onAttackActive: (signal: AttackExecutionSignal) => void;
   private readonly onAttackEnded: (signal: AttackExecutionSignal) => void;
   private readonly onDashStart?: (direction: { x: number; y: number }) => void;
@@ -69,7 +73,19 @@ export class CombatController {
   private previousSecondaryDown = false;
 
   constructor(config: CombatControllerConfig) {
-    const { scene, actor, pointer, stats, prepareAttackSignal, onActionRejected, onAttackActive, onAttackEnded, onDashStart } = config;
+    const {
+      scene,
+      actor,
+      pointer,
+      stats,
+      prepareAttackSignal,
+      canStartDash,
+      canStartAttack,
+      onActionRejected,
+      onAttackActive,
+      onAttackEnded,
+      onDashStart
+    } = config;
     const keyboard = scene.input.keyboard;
 
     this.scene = scene;
@@ -77,6 +93,8 @@ export class CombatController {
     this.pointer = pointer;
     this.stats = stats;
     this.prepareAttackSignal = prepareAttackSignal;
+    this.canStartDash = canStartDash;
+    this.canStartAttack = canStartAttack;
     this.onActionRejected = onActionRejected;
     this.onAttackActive = onAttackActive;
     this.onAttackEnded = onAttackEnded;
@@ -314,7 +332,11 @@ export class CombatController {
     }
 
     if (this.controlLockRemaining <= 0 && !this.currentAttack && this.dashRemaining <= 0 && dashPressed && this.dashCooldownRemaining <= 0) {
-      this.startDash();
+      if (this.canStartDash && !this.canStartDash()) {
+        this.onActionRejected?.("challenge");
+      } else {
+        this.startDash();
+      }
     }
 
     if (
@@ -325,9 +347,17 @@ export class CombatController {
       this.parryWindowRemaining <= 0
     ) {
       if (heavyPressed) {
-        this.startAttack("heavy");
+        if (this.canStartAttack && !this.canStartAttack("heavy")) {
+          this.onActionRejected?.("challenge");
+        } else {
+          this.startAttack("heavy");
+        }
       } else if (lightPressed) {
-        this.startAttack("light");
+        if (this.canStartAttack && !this.canStartAttack("light")) {
+          this.onActionRejected?.("challenge");
+        } else {
+          this.startAttack("light");
+        }
       }
     }
   }
