@@ -908,9 +908,9 @@ const excalibur = forgeSword(longsword, {
   },
   techniques: {
     identity: "Sovereign holy command.",
-    traitPrimary: "Divinity's Mirages",
+    traitPrimary: "Divinity's Judgment",
     traitSecondary: "The Holy Trinity",
-    activeAbilityName: "Divinity's Mirages",
+    activeAbilityName: "Divinity's Judgment",
     activeAbilityCooldownMs: 30000,
     healOnPerfectBind: 5,
     heavyArmorPierceRatio: 0.25,

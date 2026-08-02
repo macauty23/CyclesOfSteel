@@ -1281,7 +1281,7 @@ function shouldSpawnRareBoss(chapterIndex: number): boolean {
     return false;
   }
 
-  const chance = Math.min(0.34, 0.16 + (chapterIndex - 2) * 0.06);
+  const chance = Math.min(0.42, 0.22 + (chapterIndex - 2) * 0.065);
   return Math.random() < chance;
 }
 
@@ -1991,8 +1991,19 @@ export function generateWorldChapter(params: {
         parentHistory,
         []
       );
-      const bossNode = createNode(bossRegionId, "boss", bossGateway.lane, MAX_DEPTH + 2, parentHistory);
-      bossGateway.nextNodeIds = [bossNode.id];
+      const eventDepth = MAX_DEPTH + 2;
+      const swordGateway = allowSwordInTheStone && !swordInTheStonePlaced
+        ? createNode(bossGateway.regionId, "event", bossGateway.lane, eventDepth, parentHistory)
+        : null;
+      if (swordGateway) {
+        swordGateway.eventId = "swordInTheStone";
+        swordGateway.title = getRunEventDefinition("swordInTheStone")?.title ?? swordGateway.title;
+        swordGateway.nextNodeIds = [];
+        swordInTheStonePlaced = true;
+      }
+      const bossNode = createNode(bossRegionId, "boss", bossGateway.lane, MAX_DEPTH + (swordGateway ? 3 : 2), parentHistory);
+      bossGateway.nextNodeIds = [swordGateway?.id ?? bossNode.id];
+      if (swordGateway) swordGateway.nextNodeIds = [bossNode.id];
       bossNode.nextNodeIds = [];
       spawnedRareBoss = true;
     }

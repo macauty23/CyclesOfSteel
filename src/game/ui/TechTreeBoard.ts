@@ -16,6 +16,8 @@ interface TechNodeCardHandle {
     locked: boolean;
     adjacentToUnlocked: boolean;
   }): void;
+  playExcaliburReveal(): void;
+  setCinematicDimmed(dimmed: boolean): void;
 }
 
 interface TechTreeBoardConfig {
@@ -114,6 +116,15 @@ export class TechTreeBoard {
     this.drawConnections();
   }
 
+  playExcaliburReveal(): void {
+    this.techNodeCards.get("longsword")?.playExcaliburReveal();
+  }
+
+  setExcaliburCinematicDimmed(dimmed: boolean): void {
+    this.lineGraphics.setAlpha(dimmed ? 0.28 : 1);
+    this.techNodeCards.forEach((card, nodeId) => card.setCinematicDimmed(dimmed && nodeId !== "longsword"));
+  }
+
   getLocalBounds(): ReturnType<typeof getTechTreeBounds> {
     return getTechTreeBounds(gameManager.getWeaponTechRoster());
   }
@@ -125,6 +136,11 @@ export class TechTreeBoard {
     let affordable = false;
     let locked = false;
     let adjacentToUnlocked = false;
+    const isLongsword = definition.id === "longsword";
+    let excaliburPresentationShown = isLongsword && gameManager.isLegendarySwordUnlocked("excalibur");
+    let cinematicDimmed = false;
+    let revealPlaying = false;
+    const radiance = this.scene.add.circle(0, 0, TECH_NODE_WIDTH * 1.8, COLORS.gold, 0);
 
     const shadow = this.scene.add
       .rectangle(0, 7, TECH_NODE_WIDTH + 14, TECH_NODE_HEIGHT + 14, 0x05090f, 0.34)
@@ -165,6 +181,7 @@ export class TechTreeBoard {
     this.fitNodeTitle(title, 94, 28);
     const costText = this.scene.add.text(0, 18, "", { ...TEXT.caption, fontSize: "11px" }).setOrigin(0.5);
     const root = this.scene.add.container(definition.position.x, definition.position.y + TECH_TREE_Y_OFFSET, [
+      radiance,
       shadow,
       glow,
       background,
@@ -177,12 +194,15 @@ export class TechTreeBoard {
     ]);
 
     const refresh = (): void => {
+      const excalibur = gameManager.getExcaliburAscensionState();
+      const excaliburShown = isLongsword && excalibur.revealed && excaliburPresentationShown;
+      const accent = excaliburShown ? COLORS.gold : definition.accent;
       const fillColor = unlocked
-        ? mixColor(COLORS.panel, definition.accent, 0.36)
+        ? mixColor(COLORS.panel, accent, 0.36)
         : locked
           ? 0x26211d
           : available
-            ? mixColor(COLORS.panel, definition.accent, 0.14)
+            ? mixColor(COLORS.panel, accent, 0.14)
             : COLORS.disabled;
       const innerColor = unlocked
         ? mixColor(COLORS.panelSoft, definition.accent, 0.16)
@@ -194,7 +214,7 @@ export class TechTreeBoard {
       const strokeColor = focused
         ? COLORS.gold
         : unlocked
-          ? definition.accent
+          ? accent
           : locked
             ? 0x5a4f4f
             : available
@@ -212,10 +232,11 @@ export class TechTreeBoard {
               : "#6a7681";
       const glowAlpha = !adjacentToUnlocked ? 0 : focused ? 0.2 : unlocked ? 0.13 : available ? 0.11 : 0.05;
       const accentBarGlowAlpha = !adjacentToUnlocked ? 0 : focused ? 0.3 : unlocked ? 0.22 : available ? 0.2 : 0.08;
-      const accentHighlightColor = adjacentToUnlocked ? COLORS.gold : definition.accent;
+      const accentHighlightColor = adjacentToUnlocked || excaliburShown ? COLORS.gold : accent;
 
       shadow.setFillStyle(0x05090f, focused ? 0.42 : unlocked ? 0.38 : available ? 0.33 : 0.24);
-      glow.setFillStyle(definition.accent, glowAlpha);
+      glow.setFillStyle(accent, excaliburShown ? Math.max(glowAlpha, 0.16) : glowAlpha);
+      radiance.setFillStyle(COLORS.gold, excaliburShown ? 0.1 : 0);
       background.setFillStyle(fillColor, unlocked ? 0.98 : available ? 0.96 : 0.9);
       background.setStrokeStyle(2, strokeColor, focused || unlocked || available || locked ? 1 : 0.55);
       innerPanel.setFillStyle(innerColor, 0.98);
@@ -225,12 +246,14 @@ export class TechTreeBoard {
         locked ? 0.22 : adjacentToUnlocked ? focused ? 1 : unlocked ? 0.98 : available ? 0.92 : 0.42 : unlocked ? 0.94 : available ? 0.76 : 0.34
       );
       crest.setFillStyle(
-        locked ? 0x5a4f4f : focused ? COLORS.gold : definition.accent,
+        locked ? 0x5a4f4f : focused ? COLORS.gold : accent,
         locked ? 0.18 : focused ? 0.75 : unlocked ? 0.56 : available ? 0.4 : 0.2
       );
-      title.setColor(titleColor);
+      title.setText(excaliburShown ? "Excalibur" : definition.shortName);
+      this.fitNodeTitle(title, 94, 28);
+      title.setColor(excaliburShown ? colorHex(COLORS.gold) : titleColor);
       costText.setColor(costColor);
-      root.setAlpha(unlocked ? 1 : locked ? 0.56 : available ? affordable ? 1 : 0.86 : 0.62);
+      root.setAlpha((unlocked ? 1 : locked ? 0.56 : available ? affordable ? 1 : 0.86 : 0.62) * (cinematicDimmed ? 0.3 : 1));
       root.setDepth(focused ? 12 : unlocked ? 9 : available ? 7 : 5);
     };
 
@@ -263,6 +286,8 @@ export class TechTreeBoard {
       }
     });
 
+    const scene = this.scene;
+    const board = this;
     return {
       root,
       setFocused(value) {
@@ -276,8 +301,59 @@ export class TechTreeBoard {
         locked = nextState.locked;
         adjacentToUnlocked = nextState.adjacentToUnlocked;
         costText.setText(
-          unlocked ? "Forged" : locked ? "Sealed" : available ? formatShortMaterialCost(definition.cost) : "Locked"
+          isLongsword && gameManager.getExcaliburAscensionState().revealed && excaliburPresentationShown
+            ? gameManager.getExcaliburAscensionState().unlocked
+              ? "Claimed"
+              : gameManager.canAscendLongswordToExcalibur() ? "Unclaimed" : "Forged"
+            : unlocked ? "Forged" : locked ? "Sealed" : available ? formatShortMaterialCost(definition.cost) : "Locked"
         );
+        refresh();
+      },
+      playExcaliburReveal() {
+        if (!isLongsword || revealPlaying) return;
+        revealPlaying = true;
+        board.setExcaliburCinematicDimmed(true);
+
+        scene.tweens.add({
+          targets: root,
+          scaleX: 1.035,
+          scaleY: 1.035,
+          duration: 150,
+          yoyo: true,
+          repeat: 1,
+          ease: "Sine.easeInOut"
+        });
+        scene.tweens.add({ targets: glow, alpha: 0.44, duration: 180, yoyo: true, repeat: 1, ease: "Sine.easeInOut" });
+
+        scene.time.delayedCall(300, () => {
+          scene.tweens.add({
+            targets: root,
+            alpha: 0,
+            scaleX: 0.92,
+            scaleY: 0.92,
+            duration: 250,
+            ease: "Sine.easeIn",
+            onComplete: () => {
+              excaliburPresentationShown = true;
+              refresh();
+              root.setAlpha(0).setScale(0.85);
+              radiance.setAlpha(0.6).setScale(0.34);
+              spawnLegendarySparks(scene, root.x, root.y, 16);
+              scene.tweens.add({ targets: root, alpha: 1, scaleX: 1, scaleY: 1, duration: 420, ease: "Back.easeOut" });
+              scene.tweens.add({ targets: radiance, alpha: 0.12, scale: 1.3, duration: 880, ease: "Sine.easeOut" });
+              scene.tweens.add({ targets: glow, alpha: 0.52, duration: 180, yoyo: true, repeat: 2, ease: "Sine.easeInOut" });
+
+              scene.time.delayedCall(620, () => {
+                board.setExcaliburCinematicDimmed(false);
+                scene.tweens.add({ targets: root, scaleX: 1.025, scaleY: 1.025, duration: 180, yoyo: true, ease: "Sine.easeInOut" });
+                revealPlaying = false;
+              });
+            }
+          });
+        });
+      },
+      setCinematicDimmed(dimmed) {
+        cinematicDimmed = dimmed;
         refresh();
       }
     };
@@ -358,4 +434,21 @@ function mixColor(base: number, accent: number, amount: number): number {
     Phaser.Math.Linear(baseColor.green, accentColor.green, amount),
     Phaser.Math.Linear(baseColor.blue, accentColor.blue, amount)
   );
+}
+
+function spawnLegendarySparks(scene: Phaser.Scene, x: number, y: number, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    const angle = (Math.PI * 2 * index) / count + Phaser.Math.FloatBetween(-0.12, 0.12);
+    const spark = scene.add.circle(x, y, Phaser.Math.Between(2, 5), 0xffedb0, Phaser.Math.FloatBetween(0.7, 1)).setDepth(14);
+    scene.tweens.add({
+      targets: spark,
+      x: x + Math.cos(angle) * Phaser.Math.Between(54, 112),
+      y: y + Math.sin(angle) * Phaser.Math.Between(36, 82),
+      alpha: 0,
+      scale: 0.3,
+      duration: Phaser.Math.Between(460, 760),
+      ease: "Sine.easeOut",
+      onComplete: () => spark.destroy()
+    });
+  }
 }

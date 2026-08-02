@@ -19,7 +19,6 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   create(): void {
-    gameManager.reset();
     this.paintBackdrop();
 
     applyLocalizedText(
@@ -79,7 +78,7 @@ export class MainMenuScene extends Phaser.Scene {
 
     createButton({
       scene: this,
-      x: VIEWPORT.width * 0.5 - 146,
+      x: gameManager.hasSavedRun() ? VIEWPORT.width * 0.5 - 132 : VIEWPORT.width * 0.5 - 146,
       y: 620,
       width: 260,
       height: 78,
@@ -89,9 +88,17 @@ export class MainMenuScene extends Phaser.Scene {
       onClick: () => this.handleStartRun()
     });
 
+    if (gameManager.hasSavedRun()) {
+      createButton({
+        scene: this, x: VIEWPORT.width * 0.5 + 132, y: 620, width: 240, height: 78,
+        label: "Resume Run", hint: "Continue saved run", accent: 0x49634e,
+        onClick: () => gameManager.resumeSavedRun(this)
+      });
+    }
+
     createButton({
       scene: this,
-      x: VIEWPORT.width * 0.5 + 146,
+      x: gameManager.hasSavedRun() ? VIEWPORT.width - 250 : VIEWPORT.width * 0.5 + 146,
       y: 620,
       width: 260,
       height: 78,

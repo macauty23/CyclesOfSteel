@@ -109,6 +109,9 @@ export class PlaceholderEnemy {
   private weaponLengthScale = 1;
   private weaponHeightScale = 1;
   private bodyTilt = 0;
+  private presentationScale = 1;
+  private collisionWidth = 0;
+  private collisionHeight = 0;
 
   constructor(config: EnemyConfig) {
     const {
@@ -165,7 +168,9 @@ export class PlaceholderEnemy {
     this.bodyObject.body.setDrag(1760, 1760);
     this.bodyObject.body.setMaxVelocity(this.speed, this.speed);
     this.bodyObject.body.setCollideWorldBounds(true);
-    this.bodyObject.body.setSize(Math.max(28, this.size - 10), Math.max(28, this.size - 10), true);
+    this.collisionWidth = Math.max(28, this.size - 10);
+    this.collisionHeight = Math.max(28, this.size - 10);
+    this.bodyObject.body.setSize(this.collisionWidth, this.collisionHeight, true);
     this.bodyObject.body.setBoundsRectangle(new Phaser.Geom.Rectangle(ARENA.x, ARENA.y, ARENA.width, ARENA.height));
 
     this.syncPresentation(false, null);
@@ -188,6 +193,11 @@ export class PlaceholderEnemy {
 
   get y(): number {
     return this.bodyObject.y;
+  }
+
+  setPresentationScale(scale: number): void {
+    this.presentationScale = Phaser.Math.Clamp(scale, 1, 2);
+    this.syncPresentation(this.currentAttack !== null, this.currentAttack?.signal.kind ?? null, this.stunRemaining > 0);
   }
 
   get weaponName(): string {
@@ -1517,46 +1527,54 @@ export class PlaceholderEnemy {
 
     this.bodyObject.setFillStyle(bodyColor);
     this.bodyObject.setStrokeStyle(2, strokeColor, stunned ? 0.6 : telegraphing ? 0.74 : 0.32);
-    this.bodyObject.setScale(
-      (faltering ? 0.92 : telegraphing ? 1.04 : 1) * this.bodyScaleXBase,
-      (telegraphing ? 1.06 : faltering ? 1.08 : 1) * this.bodyScaleYBase
-    );
+    const bodyScaleX = (faltering ? 0.92 : telegraphing ? 1.04 : 1) * this.bodyScaleXBase * this.presentationScale;
+    const bodyScaleY = (telegraphing ? 1.06 : faltering ? 1.08 : 1) * this.bodyScaleYBase * this.presentationScale;
+    this.bodyObject.setScale(bodyScaleX, bodyScaleY);
+    this.bodyObject.body.setSize(this.collisionWidth / bodyScaleX, this.collisionHeight / bodyScaleY, true);
     this.bodyObject.setRotation(this.bodyTilt);
     this.bodyShadow.setPosition(this.x, this.y + this.size * 0.42);
-    this.bodyShadow.setScale(telegraphing ? 1.06 : 1, faltering ? 0.86 : 1);
+    this.bodyShadow.setScale((telegraphing ? 1.06 : 1) * this.presentationScale, (faltering ? 0.86 : 1) * this.presentationScale);
     this.bodyShadow.setFillStyle(0x060a10, this.alive ? (telegraphing ? 0.34 : 0.28) : 0.16);
     this.bodyDetail.setPosition(
       this.x - this.facing.x * this.size * 0.02 + perpendicular.x * this.bodyTilt * 40,
       this.y + this.size * 0.05 + perpendicular.y * this.bodyTilt * 40
     );
     this.bodyDetail.setRotation(angle * 0.08 + this.bodyTilt * 0.6);
-    this.bodyDetail.setScale(telegraphing ? 1.06 : 1, faltering ? 1.08 : 1);
+    this.bodyDetail.setScale((telegraphing ? 1.06 : 1) * this.presentationScale, (faltering ? 1.08 : 1) * this.presentationScale);
     this.bodyDetail.setFillStyle(detailColor, stunned ? 0.3 : telegraphing ? 0.26 : 0.2);
     this.bodyAccent.setPosition(
       this.x + this.facing.x * accentPose.forward + perpendicular.x * accentPose.side + perpendicular.x * this.bodyTilt * 18,
       this.y + this.size * 0.04 + this.facing.y * accentPose.forward + perpendicular.y * accentPose.side + perpendicular.y * this.bodyTilt * 18
     );
     this.bodyAccent.setRotation(angle * accentPose.rotationScale + this.bodyTilt * 0.45);
-    this.bodyAccent.setScale((telegraphing ? 1.04 : 1) * accentPose.scaleX, (faltering ? 1.05 : 1) * accentPose.scaleY);
+    this.bodyAccent.setScale(
+      (telegraphing ? 1.04 : 1) * accentPose.scaleX * this.presentationScale,
+      (faltering ? 1.05 : 1) * accentPose.scaleY * this.presentationScale
+    );
     this.bodyAccent.setFillStyle(accentColor, telegraphing ? Math.min(0.42, accentPose.alpha + 0.08) : accentPose.alpha);
     this.headDetail.setPosition(
       this.x + this.facing.x * headOffset + perpendicular.x * this.bodyTilt * 26,
       this.y + headVerticalOffset + this.facing.y * headOffset * 0.22 + perpendicular.y * this.bodyTilt * 26
     );
     this.headDetail.setRotation(angle * 0.12 + this.bodyTilt * 0.4);
+    this.headDetail.setScale(this.presentationScale);
     this.headDetail.setFillStyle(stunned ? 0xf7e6bc : telegraphing ? 0xf3d39f : detailColor, telegraphing ? 0.34 : 0.28);
     this.weaponGuard.setPosition(
       this.x + this.facing.x * (guardReach + this.weaponForwardOffset * 0.38) + perpendicular.x * this.weaponSideOffset * 0.34,
       this.y + mouthLift + this.facing.y * (guardReach + this.weaponForwardOffset * 0.38) + perpendicular.y * this.weaponSideOffset * 0.34
     );
     this.weaponGuard.setRotation(angle + this.weaponRotationOffset * 0.38);
+    this.weaponGuard.setScale(this.presentationScale);
     this.weaponGuard.setFillStyle(guardColor, 0.9);
     this.weaponBlade.setPosition(
       this.x + this.facing.x * (guardReach + (beast ? 2 : 6) + this.weaponForwardOffset) + perpendicular.x * this.weaponSideOffset,
       this.y + mouthLift + this.facing.y * (guardReach + (beast ? 2 : 6) + this.weaponForwardOffset) + perpendicular.y * this.weaponSideOffset
     );
     this.weaponBlade.setRotation(angle + this.weaponRotationOffset);
-    this.weaponBlade.setScale(bladeScale * this.weaponLengthScale, (telegraphing ? 1.06 : 1) * this.weaponHeightScale);
+    this.weaponBlade.setScale(
+      bladeScale * this.weaponLengthScale * this.presentationScale,
+      (telegraphing ? 1.06 : 1) * this.weaponHeightScale * this.presentationScale
+    );
     this.weaponBlade.setFillStyle(bladeColor, 0.95);
   }
 

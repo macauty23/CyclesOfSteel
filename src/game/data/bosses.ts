@@ -91,10 +91,10 @@ export const BOSSES: Record<BiomeBossId, BossDefinition> = {
     fill: 0x2a1210,
     edge: 0xffb06b,
     armor: "light",
-    phaseHp: [630, 760],
-    speed: 240,
-    acceleration: 1740,
-    aggression: 0.88,
+    phaseHp: [600, 720],
+    speed: 222,
+    acceleration: 1600,
+    aggression: 0.8,
     size: 52
   },
   honored: {
@@ -143,10 +143,10 @@ export const BOSSES: Record<BiomeBossId, BossDefinition> = {
     fill: 0x0f1725,
     edge: 0xb5d4f4,
     armor: "heavy",
-    phaseHp: [980, 1090],
-    speed: 184,
-    acceleration: 1340,
-    aggression: 0.68,
+    phaseHp: [1060, 1180],
+    speed: 192,
+    acceleration: 1410,
+    aggression: 0.74,
     size: 58
   },
   permafrost: {

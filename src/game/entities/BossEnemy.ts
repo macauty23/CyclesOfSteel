@@ -164,6 +164,9 @@ export class BossEnemy {
   private orbitRearExposureMs = 0;
   private orbitBreakCooldownRemaining = 0;
   private orbitBreakWindowRemaining = 0;
+  private presentationScale = 1;
+  private collisionWidth = 0;
+  private collisionHeight = 0;
 
   constructor(config: BossConfig) {
     const { scene, x, y, phaseHp, speed, acceleration, tint, size, definition, attackDamageBonus, aggression } = config;
@@ -197,7 +200,9 @@ export class BossEnemy {
     this.bodyObject.body.setDrag(1920, 1920);
     this.bodyObject.body.setMaxVelocity(this.speed, this.speed);
     this.bodyObject.body.setCollideWorldBounds(true);
-    this.bodyObject.body.setSize(Math.max(30, this.size - 10), Math.max(30, this.size - 10), true);
+    this.collisionWidth = Math.max(30, this.size - 10);
+    this.collisionHeight = Math.max(30, this.size - 10);
+    this.bodyObject.body.setSize(this.collisionWidth, this.collisionHeight, true);
     this.bodyObject.body.setBoundsRectangle(new Phaser.Geom.Rectangle(ARENA.x, ARENA.y, ARENA.width, ARENA.height));
 
     this.syncPresentation();
@@ -220,6 +225,11 @@ export class BossEnemy {
 
   get y(): number {
     return this.bodyObject.y;
+  }
+
+  setPresentationScale(scale: number): void {
+    this.presentationScale = Phaser.Math.Clamp(scale, 1, 2);
+    this.syncPresentation();
   }
 
   get weaponName(): string {
@@ -526,12 +536,12 @@ export class BossEnemy {
         return [
           {
             light: createAttack("Raking Bite", accent, "sweep", "standard", "melee", 14 + power, 112, 72, 138, 94, 154, 114, createImpact(42, 150, 22, 0.0032)),
-            heavy: createAttack("Tide Charge", accent, "thrust", "lunge", "melee", 20 + power, 174, 36, 214, 104, 248, 296, createImpact(74, 226, 34, 0.0042)),
+            heavy: createAttack("Tide Reaper", accent, "sweep", "cleave", "melee", 20 + power, 148, 116, 214, 104, 248, 188, createImpact(68, 210, 32, 0.004)),
             signature: createAttack("Breaker Sweep", accent, "sweep", "cleave", "melee", 18 + power, 150, 108, 188, 116, 204, 176, createImpact(60, 196, 30, 0.0038))
           },
           {
             light: createAttack("Riptide Maw", accent, "sweep", "standard", "melee", 18 + phaseTwoPower, 124, 84, 122, 98, 142, 132, createImpact(52, 178, 26, 0.0038)),
-            heavy: createAttack("Depth Charge", accent, "thrust", "lunge", "melee", 24 + phaseTwoPower, 186, 44, 188, 104, 228, 314, createImpact(88, 252, 40, 0.0049)),
+            heavy: createAttack("Depth Reaper", accent, "sweep", "cleave", "melee", 24 + phaseTwoPower, 156, 132, 188, 104, 228, 204, createImpact(80, 236, 38, 0.0046)),
             signature: createAttack("Breaker Spiral", accent, "sweep", "cleave", "melee", 22 + phaseTwoPower, 160, 126, 166, 120, 188, 210, createImpact(70, 224, 34, 0.0044))
           }
         ];
@@ -774,15 +784,16 @@ export class BossEnemy {
     const angularSpeed = deltaMs > 0 ? Math.abs(angleDelta) / (deltaMs / 1000) : 0;
     const directionSign = angleDelta > 0.006 ? 1 : angleDelta < -0.006 ? -1 : 0;
     const offsetFromFront = Math.abs(Phaser.Math.Angle.Wrap(targetAngle - facingAngle));
-    const sideThreshold = 1.02;
-    const rearThreshold = 2.08;
+    const loopAware = this.definition.id === "honored" || this.definition.id === "permafrost";
+    const sideThreshold = loopAware ? 0.9 : 1.02;
+    const rearThreshold = loopAware ? 1.94 : 2.08;
     const detectionRange = this.getOrbitDetectionRange();
     const orbitEligible =
       !this.currentAttack &&
       this.stunRemaining <= 0 &&
       distance >= this.getCurrentAttackKit().light.range * 0.52 &&
       distance <= detectionRange &&
-      angularSpeed >= 0.82 &&
+      angularSpeed >= (loopAware ? 0.66 : 0.82) &&
       directionSign !== 0;
 
     if (orbitEligible) {
@@ -813,9 +824,9 @@ export class BossEnemy {
 
     if (
       this.orbitBreakCooldownRemaining <= 0 &&
-      this.orbitConsistencyMs >= 980 &&
-      this.orbitTravelRadians >= 1.7 &&
-      (this.orbitSideExposureMs >= 420 || this.orbitRearExposureMs >= 240)
+      this.orbitConsistencyMs >= (loopAware ? 660 : 980) &&
+      this.orbitTravelRadians >= (loopAware ? 1.18 : 1.7) &&
+      (this.orbitSideExposureMs >= (loopAware ? 280 : 420) || this.orbitRearExposureMs >= (loopAware ? 160 : 240))
     ) {
       this.orbitBreakWindowRemaining = Math.max(this.orbitBreakWindowRemaining, this.getOrbitBreakWindowDuration());
     }
@@ -947,7 +958,7 @@ export class BossEnemy {
     switch (this.definition.id) {
       case "honored":
       case "permafrost":
-        return 620;
+        return 760;
       case "apex":
         return 580;
       case "exalted":
@@ -1290,8 +1301,8 @@ export class BossEnemy {
         if (orbitActive && this.specialCooldownRemaining <= 0) {
           const landing = this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? 94 : 82, phaseTwo ? 32 : 24, 56);
           const trailPoint = this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? -44 : -36, phaseTwo ? -10 : -6, 52);
-          this.specialCooldownRemaining = phaseTwo ? 2140 : 3180;
-          this.arenaCooldownRemaining = phaseTwo ? 2140 : 2840;
+          this.specialCooldownRemaining = phaseTwo ? 3200 : 4300;
+          this.arenaCooldownRemaining = phaseTwo ? 3200 : 3900;
           this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 240 : 320);
           this.guardRemaining = phaseTwo ? 220 : 140;
           this.postTeleportRecoveryRemaining = this.getTeleportRecoveryDurationMs();
@@ -1320,11 +1331,11 @@ export class BossEnemy {
 
         if (
           this.specialCooldownRemaining <= 0 &&
-          (distance <= kit.heavy.range * 0.78 || targetState.isAttacking || targetState.isDashing)
+          (distance <= kit.heavy.range * 0.66 || ((targetState.isAttacking || targetState.isDashing) && distance <= kit.heavy.range * 0.82))
         ) {
           const landing = this.getEnflamedTeleportDestination(targetX, targetY, phaseTwo);
-          this.specialCooldownRemaining = phaseTwo ? 2240 : 3320;
-          this.arenaCooldownRemaining = phaseTwo ? 2200 : 2900;
+          this.specialCooldownRemaining = phaseTwo ? 3400 : 4500;
+          this.arenaCooldownRemaining = phaseTwo ? 3300 : 4100;
           this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 260 : 340);
           this.guardRemaining = phaseTwo ? 220 : 140;
           this.postTeleportRecoveryRemaining = this.getTeleportRecoveryDurationMs();
@@ -1354,7 +1365,7 @@ export class BossEnemy {
             this.attackCooldownRemaining = Math.min(this.attackCooldownRemaining, phaseTwo ? 80 : 120);
             this.bodyObject.body.setVelocity(spacingReset.x * (phaseTwo ? 128 : 104), spacingReset.y * (phaseTwo ? 128 : 104));
             this.counterQueued = true;
-            this.consumeOrbitPressure(980);
+            this.consumeOrbitPressure(680);
             return {
               performedSpecial: true,
               feedbackText: "The Honored refuses the flank.",
@@ -1366,7 +1377,7 @@ export class BossEnemy {
             this.specialCooldownRemaining = phaseTwo ? 1480 : 2100;
             this.guardRemaining = phaseTwo ? 320 : 240;
             this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 140 : 180);
-            this.consumeOrbitPressure(900);
+            this.consumeOrbitPressure(640);
             this.startAttack(
               "light",
               kit.light,
@@ -1383,7 +1394,7 @@ export class BossEnemy {
           this.guardRemaining = phaseTwo ? 760 : 560;
           this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 180 : 240);
           this.bodyObject.body.setVelocity(spacingReset.x * (phaseTwo ? 132 : 110), spacingReset.y * (phaseTwo ? 132 : 110));
-          this.consumeOrbitPressure(1040);
+          this.consumeOrbitPressure(720);
           return {
             performedSpecial: true,
             feedbackText: "The Honored resets the duel line.",
@@ -1557,7 +1568,7 @@ export class BossEnemy {
           this.specialCooldownRemaining = phaseTwo ? 1700 : 2400;
           this.guardRemaining = phaseTwo ? 420 : 260;
           this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 160 : 220);
-          this.consumeOrbitPressure(980);
+          this.consumeOrbitPressure(680);
           this.startAttack(
             "heavy",
             kit.counter ?? kit.heavy,
@@ -2245,12 +2256,14 @@ export class BossEnemy {
     const auraScaleY = auraIsHalo ? (windup || phaseTwo ? 0.26 : 0.22) : windup || this.guardRemaining > 0 || phaseTwo ? 1.08 : 1;
     const auraDisplayAlpha = auraIsHalo ? Math.min(0.46, auraAlpha + 0.14) : auraAlpha;
 
-    this.bodyShadow.setPosition(this.x, this.y + this.size * 0.28).setAlpha(shadowAlpha);
+    this.bodyObject.setScale(this.presentationScale);
+    this.bodyObject.body.setSize(this.collisionWidth / this.presentationScale, this.collisionHeight / this.presentationScale, true);
+    this.bodyShadow.setPosition(this.x, this.y + this.size * 0.28).setAlpha(shadowAlpha).setScale(this.presentationScale);
     this.auraRing
       .setPosition(this.x, auraY)
       .setRotation(auraIsHalo ? 0 : angle)
       .setAlpha(auraDisplayAlpha)
-      .setScale(auraScaleX, auraScaleY);
+      .setScale(auraScaleX * this.presentationScale, auraScaleY * this.presentationScale);
 
     if (this.bodySprite) {
       const hover =
@@ -2271,7 +2284,7 @@ export class BossEnemy {
           this.y + hover + this.facing.y * spriteForward + perpendicular.y * spriteSide
         )
         .setRotation(this.definition.id === "skelecar" ? angle * 0.1 + sway : angle * 0.03 + sway)
-        .setScale(spriteScale)
+        .setScale(spriteScale * this.presentationScale)
         .setFlipX(this.facing.x > 0)
         .setAlpha(this.stunRemaining > 0 ? 0.74 : 1);
     }
@@ -2374,11 +2387,15 @@ export class BossEnemy {
         break;
     }
 
-    this.ornamentPrimary.setPosition(primaryX, primaryY).setRotation(primaryRotation).setScale(primaryScaleX, primaryScaleY).setAlpha(primaryAlpha);
+    this.ornamentPrimary
+      .setPosition(primaryX, primaryY)
+      .setRotation(primaryRotation)
+      .setScale(primaryScaleX * this.presentationScale, primaryScaleY * this.presentationScale)
+      .setAlpha(primaryAlpha);
     this.ornamentSecondary
       .setPosition(secondaryX, secondaryY)
       .setRotation(secondaryRotation)
-      .setScale(secondaryScaleX, secondaryScaleY)
+      .setScale(secondaryScaleX * this.presentationScale, secondaryScaleY * this.presentationScale)
       .setAlpha(secondaryAlpha);
 
     const guardX = this.x + this.facing.x * guardForward + perpendicular.x * attackSide * 0.28;
@@ -2386,8 +2403,16 @@ export class BossEnemy {
     const bladeX = guardX + this.facing.x * bladeForward + perpendicular.x * attackSide;
     const bladeY = guardY + this.facing.y * bladeForward + perpendicular.y * attackSide;
 
-    this.weaponGuard.setPosition(guardX, guardY).setRotation(angle).setScale(guardScaleX, 1).setAlpha(guardAlpha);
-    this.weaponBlade.setPosition(bladeX, bladeY).setRotation(bladeRotation).setScale(bladeScaleX, bladeScaleY).setAlpha(bladeAlpha);
+    this.weaponGuard
+      .setPosition(guardX, guardY)
+      .setRotation(angle)
+      .setScale(guardScaleX * this.presentationScale, this.presentationScale)
+      .setAlpha(guardAlpha);
+    this.weaponBlade
+      .setPosition(bladeX, bladeY)
+      .setRotation(bladeRotation)
+      .setScale(bladeScaleX * this.presentationScale, bladeScaleY * this.presentationScale)
+      .setAlpha(bladeAlpha);
     this.bodyObject.setAlpha(this.bodySprite ? 0.18 : 1);
 
     this.bodyObject.setFillStyle(

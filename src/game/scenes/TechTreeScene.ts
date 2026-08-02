@@ -33,7 +33,6 @@ export class TechTreeScene extends Phaser.Scene {
   private detailText!: Phaser.GameObjects.Text;
   private feedbackText!: Phaser.GameObjects.Text;
   private tutorialOverlay: GuidedOverlayHandle | null = null;
-  private legendaryPromptOverlay: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super(SCENE_KEYS.TechTree);
@@ -51,8 +50,7 @@ export class TechTreeScene extends Phaser.Scene {
         this.focusedTechNodeId = nodeId;
         this.refreshView();
       },
-      onNodeActivated: (nodeId) => this.attemptUnlockTechNode(nodeId),
-      onNodeAlternateActivated: (nodeId) => this.handleAlternateNodeActivation(nodeId)
+      onNodeActivated: (nodeId) => this.attemptUnlockTechNode(nodeId)
     });
 
     this.dragBounds = this.createWorldBackdrop();
@@ -62,15 +60,18 @@ export class TechTreeScene extends Phaser.Scene {
     this.bindShortcuts();
     this.centerCameraOnFocusedNode();
     this.refreshView();
+    if (gameManager.isExcaliburNodeRevealed() && !gameManager.isLegendarySwordUnlocked("excalibur")) {
+      this.time.delayedCall(120, () => this.revealExcaliburNode());
+    }
     this.maybeOpenTutorialOverlay();
   }
 
   private createWorldBackdrop(): Phaser.Geom.Rectangle {
     const bounds = this.techTreeBoard.getLocalBounds();
     const worldBounds = new Phaser.Geom.Rectangle(
-      bounds.minX - TECH_TREE_DRAG_PADDING_X,
+      bounds.minX - TECH_TREE_DRAG_PADDING_X - 560,
       bounds.minY - TECH_TREE_DRAG_PADDING_Y,
-      bounds.width + TECH_TREE_DRAG_PADDING_X * 2,
+      bounds.width + TECH_TREE_DRAG_PADDING_X * 2 + 560,
       bounds.height + TECH_TREE_DRAG_PADDING_Y * 2
     );
 
@@ -195,12 +196,6 @@ export class TechTreeScene extends Phaser.Scene {
 
   private bindShortcuts(): void {
     this.input.keyboard?.on("keydown-ESC", () => {
-      if (this.legendaryPromptOverlay) {
-        this.legendaryPromptOverlay.destroy();
-        this.legendaryPromptOverlay = null;
-        return;
-      }
-
       if (this.tutorialOverlay) {
         return;
       }
@@ -226,6 +221,20 @@ export class TechTreeScene extends Phaser.Scene {
   }
 
   private attemptUnlockTechNode(nodeId: WeaponTechNodeId): void {
+    if (nodeId === "longsword" && gameManager.isExcaliburNodeRevealed()) {
+      if (gameManager.isLegendarySwordUnlocked("excalibur")) {
+        gameManager.upgradeCurrentSwordToLegendary("excalibur");
+        this.feedbackText.setText("Excalibur equipped.");
+      } else if (gameManager.canAscendLongswordToExcalibur()) {
+        gameManager.ascendLongswordToExcalibur();
+        this.feedbackText.setText("Excalibur claimed.");
+      } else {
+        this.feedbackText.setText("Excalibur requirements are not complete.");
+      }
+      this.refreshView();
+      return;
+    }
+
     const node = WEAPON_TECH_TREE[nodeId];
     const blockingNode = gameManager.getWeaponTechBlockingNode(nodeId);
     const prerequisitesMet = node.prerequisiteIds.every((prerequisiteId) => gameManager.isWeaponTechUnlocked(prerequisiteId));
@@ -257,37 +266,11 @@ export class TechTreeScene extends Phaser.Scene {
 
     if (gameManager.unlockWeaponTech(nodeId)) {
       this.feedbackText.setText(`${node.name} forged.`);
+      if (gameManager.isExcaliburNodeRevealed()) {
+        this.revealExcaliburNode();
+      }
     } else {
       this.feedbackText.setText(`Need ${formatShortMaterialCost(node.cost)}.`);
-    }
-
-    this.refreshView();
-  }
-
-  private handleAlternateNodeActivation(nodeId: WeaponTechNodeId): void {
-    if (nodeId !== "longsword") {
-      this.feedbackText.setText("Only the Longsword holds a hidden ascension.");
-      this.refreshView();
-      return;
-    }
-
-    if (gameManager.canAscendLongswordToExcalibur()) {
-      this.openExcaliburPrompt();
-      return;
-    }
-
-    const ascension = gameManager.getExcaliburAscensionState();
-
-    if (ascension.unlocked) {
-      this.feedbackText.setText("Excalibur is already unlocked. Watch for The Sword In The Stone.");
-    } else if (!ascension.honoredCleared) {
-      this.feedbackText.setText("Defeat The Honored at least once to wake this ascension.");
-    } else if (!ascension.ready) {
-      this.feedbackText.setText(`Need 10 flawless Blessed Longsword wins. Current streak: ${ascension.flawlessStreak}/10.`);
-    } else if (!ascension.onEligibleLeaf) {
-      this.feedbackText.setText("Ascension is ready, but you must stand on a finished Longsword branch leaf first.");
-    } else {
-      this.feedbackText.setText("The longsword line is not ready to ascend yet.");
     }
 
     this.refreshView();
@@ -304,7 +287,10 @@ export class TechTreeScene extends Phaser.Scene {
     const available = !unlocked && !blockingNode && prerequisitesMet;
     const affordable = available && gameManager.canAfford(focusedNode.cost);
     const excalibur = gameManager.getExcaliburAscensionState();
-    const status = unlocked
+    const showingExcalibur = focusedNode.id === "longsword" && excalibur.revealed;
+    const status = showingExcalibur
+      ? excalibur.unlocked ? "Claimed" : "Unclaimed"
+      : unlocked
       ? "Forged"
       : arcaneDebtActive
         ? "Sealed by Arcane Debt"
@@ -326,34 +312,52 @@ export class TechTreeScene extends Phaser.Scene {
       ].join("\n")
     );
 
-    this.detailTitleText.setText(focusedNode.name);
+    this.detailTitleText.setText(showingExcalibur ? "Excalibur" : focusedNode.name);
     this.fitDetailTitle(this.detailTitleText, 284, 54);
     this.detailText.setY(346 + this.detailTitleText.height);
     this.detailText.setText(
       [
         status,
-        focusedNode.summary,
-        focusedNode.detail,
-        focusedNode.id === "longsword"
+        showingExcalibur
           ? [
-              "Hidden Ascension",
-              excalibur.unlocked
-                ? "Excalibur unlocked. A rare Sword In The Stone event can now upgrade future runs."
-                : `Flawless Blessed Longsword streak: ${excalibur.flawlessStreak}/10`,
-              excalibur.honoredCleared ? "The Honored has been defeated." : "Defeat The Honored once to qualify.",
-              excalibur.ready
-                ? excalibur.onEligibleLeaf
-                  ? "Right-click Longsword to ascend."
-                  : "Ascension is ready. Reach a finished Longsword branch leaf, then right-click Longsword."
-                : "Ascension remains dormant."
-            ].join("\n")
-          : ""
+              `Defeat The Honored: ${excalibur.honoredCleared ? "Complete" : "Required"}`,
+              `Blessed flawless streak: ${excalibur.flawlessStreak}/8`,
+              "The pinnacle of the Longsword path. A sacred blade that answers only flawless measure and unwavering resolve. The king and the kingdom are one; as your spirit rises, the land flourishes. Should you fall, so too shall a fraction of the realm."
+            ].filter(Boolean).join("\n")
+          : [focusedNode.summary, focusedNode.detail].join("\n\n")
       ]
         .filter((entry) => entry.length > 0)
         .join("\n\n")
     );
     this.techTreeBoard.setFocusedNodeId(this.focusedTechNodeId);
     this.techTreeBoard.refresh();
+  }
+
+  private revealExcaliburNode(): void {
+    const longsword = WEAPON_TECH_TREE.longsword;
+    const nodeCenterX = longsword.position.x;
+    const nodeCenterY = longsword.position.y + TECH_TREE_Y_OFFSET;
+    this.focusedTechNodeId = "longsword";
+    this.techTreeBoard.setFocusedNodeId("longsword");
+
+    // MARKER - EXCALIBUR CENTERING
+    // DO NOT TOUCH ANYMORE, IT IS **PERFECT**.
+    this.cameras.main.pan(1450, nodeCenterX, nodeCenterY, "Sine.easeInOut", true);
+    this.cameras.main.once(Phaser.Cameras.Scene2D.Events.PAN_COMPLETE, () => {
+      // Snap to the same card-center coordinate after the tween to prevent residual camera drift.
+      this.cameras.main.centerOn(nodeCenterX, nodeCenterY);
+      this.techTreeBoard.playExcaliburReveal();
+      this.spawnExcaliburEmbers();
+    });
+  }
+  private spawnExcaliburEmbers(): void {
+    const spawn = (): void => {
+      if (!this.sys.isActive() || !gameManager.isExcaliburNodeRevealed()) return;
+      const radius = Phaser.Math.Between(5, 22);
+      const orb = this.add.circle(Phaser.Math.Between(370, VIEWPORT.width - 20), VIEWPORT.height + radius, radius, Phaser.Math.Between(0xd47b28, 0xffc06b), Phaser.Math.FloatBetween(0.08, 0.24)).setScrollFactor(0).setDepth(2);
+      this.tweens.add({ targets: orb, y: -radius, x: orb.x + Phaser.Math.Between(-90, 90), alpha: 0, duration: Phaser.Math.Between(5000, 9000), ease: "Sine.easeInOut", onComplete: () => { orb.destroy(); spawn(); } });
+    };
+    for (let i = 0; i < 64; i += 1) this.time.delayedCall(i * 140, spawn);
   }
 
   private formatCurrentBranch(unlockedTechNodeIds: WeaponTechNodeId[]): string {
@@ -409,76 +413,4 @@ export class TechTreeScene extends Phaser.Scene {
     });
   }
 
-  private openExcaliburPrompt(): void {
-    this.legendaryPromptOverlay?.destroy();
-
-    const veil = this.add
-      .rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, VIEWPORT.width, VIEWPORT.height, 0x060a10, 0.72)
-      .setScrollFactor(0);
-    const panel = this.add
-      .rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, 500, 280, COLORS.panel, 0.98)
-      .setStrokeStyle(2, COLORS.gold, 0.92)
-      .setScrollFactor(0);
-    const title = this.add.text(VIEWPORT.width * 0.5, 252, "Ascend To Excalibur?", TEXT.heading).setOrigin(0.5).setScrollFactor(0);
-    const copy = this.add
-      .text(
-        VIEWPORT.width * 0.5,
-        314,
-        "Would you like to ascend to Excalibur?\nThis upgrades the current run's sword into the hidden legendary blade.",
-        { ...TEXT.small, align: "center", color: colorHex(COLORS.subtext) }
-      )
-      .setOrigin(0.5)
-      .setWordWrapWidth(404)
-      .setScrollFactor(0);
-
-    const container = this.add.container(0, 0, [veil, panel, title, copy]);
-    container.setDepth(40).setScrollFactor(0);
-    [veil, panel, title, copy].forEach((entry) => entry.setDepth(40));
-
-    const closePrompt = (): void => {
-      container.destroy();
-      this.legendaryPromptOverlay = null;
-    };
-
-    const yesButton = createButton({
-      scene: this,
-      x: VIEWPORT.width * 0.5 - 92,
-      y: 434,
-      width: 160,
-      height: 62,
-      label: "Ascend",
-      hint: "Accept the legendary upgrade",
-      accent: 0x6a5b2b,
-      scrollFactor: 0,
-      onClick: () => {
-        if (gameManager.ascendLongswordToExcalibur()) {
-          this.feedbackText.setText("Excalibur ascended from the longsword line.");
-        } else {
-          this.feedbackText.setText("The ascension failed to answer.");
-        }
-
-        closePrompt();
-        this.refreshView();
-      }
-    });
-    yesButton.root.setDepth(41);
-    container.add(yesButton.root);
-
-    const noButton = createButton({
-      scene: this,
-      x: VIEWPORT.width * 0.5 + 92,
-      y: 434,
-      width: 160,
-      height: 62,
-      label: "Wait",
-      hint: "Keep the current blade for now",
-      accent: 0x394554,
-      scrollFactor: 0,
-      onClick: closePrompt
-    });
-    noButton.root.setDepth(41);
-    container.add(noButton.root);
-
-    this.legendaryPromptOverlay = container;
-  }
 }

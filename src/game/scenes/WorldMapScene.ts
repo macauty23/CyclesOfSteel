@@ -14,6 +14,7 @@ import {
   TUTORIAL_WORLD_MAP_PAGES
 } from "../tutorial/tutorialData";
 import { createGuidedOverlay, type GuidedOverlayHandle } from "../ui/createGuidedOverlay";
+import { getBiomeBackgroundKey, preloadBiomeBackgrounds } from "../ui/biomeBackgrounds";
 import { createButton, type ButtonHandle } from "../ui/createButton";
 import { applyLocalizedText, localizeTextStyle } from "../ui/localization";
 import { COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
@@ -35,6 +36,9 @@ interface MerchantOption {
 
 export class WorldMapScene extends Phaser.Scene {
   private static readonly HUD_BOUNDS = new Phaser.Geom.Rectangle(32, 32, 340, 650);
+  private static readonly MAP_CONTENT_X = 396;
+  private static readonly MAP_CONTENT_WIDTH = VIEWPORT.width - WorldMapScene.MAP_CONTENT_X - 24;
+  private static readonly MAP_PANORAMA_HEIGHT = 194;
   private static readonly SPECIAL_REGION_IDS = new Set<RegionId>([
     "frostlands",
     "frozenPeaks",
@@ -51,6 +55,7 @@ export class WorldMapScene extends Phaser.Scene {
     "skyIslands"
   ]);
   private readonly nodeCards = new Map<string, NodeCardHandle>();
+  private connectionGraphics: Phaser.GameObjects.Graphics | null = null;
   private selectedNodeId = "";
   private isDragging = false;
   private dragStartX = 0;
@@ -70,9 +75,16 @@ export class WorldMapScene extends Phaser.Scene {
   private tutorialOverlay: GuidedOverlayHandle | null = null;
   private lastTestModeEnterNodeId = "";
   private lastTestModeEnterAt = -Infinity;
+  private forcedTestNodeId: string | null = null;
+  private biomeBackdrop: Phaser.GameObjects.Image | null = null;
+  private biomeBackdropKey = "";
 
   constructor() {
     super(SCENE_KEYS.WorldMap);
+  }
+
+  preload(): void {
+    preloadBiomeBackgrounds(this);
   }
 
   create(): void {
@@ -87,10 +99,15 @@ export class WorldMapScene extends Phaser.Scene {
     this.travelButton = null;
     this.lastTestModeEnterNodeId = "";
     this.lastTestModeEnterAt = -Infinity;
+    this.forcedTestNodeId = null;
+    this.biomeBackdrop = null;
+    this.biomeBackdropKey = "";
+    this.connectionGraphics = null;
 
+    this.updateBiomeBackdrop(gameManager.getWorldNodeDefinition(this.selectedNodeId)?.regionId ?? "plains", true);
+    this.createMapCanvas();
     this.dragBounds = this.paintBackdrop(visibleNodes);
     this.createDragSurface();
-    this.drawRegionBands(visibleNodes);
     this.drawConnections(visibleNodes);
     this.drawNodes(visibleNodes);
     this.drawHud();
@@ -105,107 +122,85 @@ export class WorldMapScene extends Phaser.Scene {
 
     this.cameras.main.setBackgroundColor(COLORS.background);
     this.cameras.main.setBounds(worldBounds.x, worldBounds.y, worldBounds.width, worldBounds.height);
-    const graphics = this.add.graphics();
-    graphics.fillStyle(COLORS.background, 1);
-    graphics.fillRect(worldBounds.x, worldBounds.y, worldBounds.width, worldBounds.height);
-    graphics.fillStyle(COLORS.panelSoft, 0.22);
-    graphics.fillRect(worldBounds.x, worldBounds.y, worldBounds.width, 112);
-    graphics.fillStyle(COLORS.gold, 0.07);
-    graphics.fillCircle(worldBounds.right - 120, worldBounds.y + 108, 160);
-    graphics.lineStyle(1, COLORS.panelEdge, 0.16);
-
-    for (let x = worldBounds.x; x <= worldBounds.right; x += 64) {
-      graphics.lineBetween(x, worldBounds.y, x, worldBounds.bottom);
-    }
-
-    for (let y = worldBounds.y; y <= worldBounds.bottom; y += 64) {
-      graphics.lineBetween(worldBounds.x, y, worldBounds.right, y);
-    }
 
     return worldBounds;
   }
 
-  private drawRegionBands(nodes: WorldNodeDefinition[]): void {
-    const graphics = this.add.graphics().setDepth(-2);
-    const sortedNodes = [...nodes].sort((left, right) => {
-      const leftDepth = left.worldDepth ?? left.depth;
-      const rightDepth = right.worldDepth ?? right.depth;
+  private createBiomeBackdrop(textureKey: string, alpha: number): Phaser.GameObjects.Image {
+    const backdrop = this.add.image(0, 0, textureKey);
+    const displayWidth = WorldMapScene.MAP_CONTENT_WIDTH;
+    const displayHeight = displayWidth * (backdrop.height / Math.max(1, backdrop.width));
 
-      if (leftDepth !== rightDepth) {
-        return leftDepth - rightDepth;
-      }
+    return backdrop
+      .setPosition(WorldMapScene.MAP_CONTENT_X + displayWidth * 0.5, WorldMapScene.MAP_PANORAMA_HEIGHT * 0.54)
+      .setDisplaySize(displayWidth, displayHeight)
+      .setScrollFactor(0)
+      .setDepth(-10)
+      .setAlpha(alpha);
+  }
 
-      return left.lane - right.lane;
+  private createMapCanvas(): void {
+    const graphics = this.add.graphics().setScrollFactor(0).setDepth(-8);
+    const x = WorldMapScene.MAP_CONTENT_X;
+    const width = WorldMapScene.MAP_CONTENT_WIDTH;
+    const panoramaHeight = WorldMapScene.MAP_PANORAMA_HEIGHT;
+
+    graphics.fillStyle(0x10161f, 0.98);
+    graphics.fillRect(x, panoramaHeight + 42, width, VIEWPORT.height - panoramaHeight - 42);
+    graphics.fillGradientStyle(0x10161f, 0x10161f, 0x10161f, 0x10161f, 0.04, 0.04, 0.98, 0.98);
+    graphics.fillRect(x, panoramaHeight - 30, width, 76);
+    graphics.fillStyle(0x081018, 0.1);
+    graphics.fillRect(x, 0, width, panoramaHeight);
+  }
+
+  private updateBiomeBackdrop(regionId: RegionId, immediate = false): void {
+    const textureKey = getBiomeBackgroundKey(regionId);
+
+    if (textureKey === this.biomeBackdropKey && this.biomeBackdrop) {
+      return;
+    }
+
+    const nextBackdrop = this.createBiomeBackdrop(textureKey, immediate ? 0.94 : 0);
+    const previousBackdrop = this.biomeBackdrop;
+    this.biomeBackdrop = nextBackdrop;
+    this.biomeBackdropKey = textureKey;
+
+    if (immediate || !previousBackdrop) {
+      previousBackdrop?.destroy();
+      return;
+    }
+
+    this.tweens.killTweensOf(previousBackdrop);
+    this.tweens.add({
+      targets: previousBackdrop,
+      alpha: 0,
+      duration: 520,
+      ease: "Sine.easeInOut",
+      onComplete: () => previousBackdrop.destroy()
     });
-    const clusters: Array<{
-      regionId: RegionId;
-      minX: number;
-      maxX: number;
-      minY: number;
-      maxY: number;
-      minWorldDepth: number;
-      maxWorldDepth: number;
-    }> = [];
-
-    for (const node of sortedNodes) {
-      const position = this.getNodePosition(node);
-      const worldDepth = node.worldDepth ?? node.depth;
-      let cluster: (typeof clusters)[number] | undefined;
-
-      for (let index = clusters.length - 1; index >= 0; index -= 1) {
-        const candidate = clusters[index];
-
-        if (candidate.regionId !== node.regionId) {
-          continue;
-        }
-
-        if (worldDepth > candidate.maxWorldDepth + 1) {
-          break;
-        }
-
-        if (worldDepth >= candidate.minWorldDepth - 1 && worldDepth <= candidate.maxWorldDepth + 1) {
-          cluster = candidate;
-          break;
-        }
-      }
-
-      if (!cluster) {
-        clusters.push({
-          regionId: node.regionId,
-          minX: position.x - 76,
-          maxX: position.x + 76,
-          minY: position.y - 70,
-          maxY: position.y + 70,
-          minWorldDepth: worldDepth,
-          maxWorldDepth: worldDepth
-        });
-        continue;
-      }
-
-      cluster.minX = Math.min(cluster.minX, position.x - 76);
-      cluster.maxX = Math.max(cluster.maxX, position.x + 76);
-      cluster.minY = Math.min(cluster.minY, position.y - 70);
-      cluster.maxY = Math.max(cluster.maxY, position.y + 70);
-      cluster.minWorldDepth = Math.min(cluster.minWorldDepth, worldDepth);
-      cluster.maxWorldDepth = Math.max(cluster.maxWorldDepth, worldDepth);
-    }
-
-    for (const bounds of clusters) {
-      const region = gameManager.getRegionDefinition(bounds.regionId);
-      const isSpecial = WorldMapScene.SPECIAL_REGION_IDS.has(bounds.regionId);
-      graphics.fillStyle(region.fill, isSpecial ? 0.8 : 0.7);
-      graphics.fillRect(bounds.minX, bounds.minY, bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
-      graphics.lineStyle(isSpecial ? 3 : 2, isSpecial ? COLORS.gold : region.edge, isSpecial ? 0.56 : 0.42);
-      graphics.strokeRect(bounds.minX, bounds.minY, bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
-      this.add
-        .text(bounds.minX + 10, bounds.minY + 10, region.name, { ...TEXT.caption, color: colorHex(isSpecial ? COLORS.gold : region.accent) })
-        .setDepth(-1);
-    }
+    this.tweens.add({
+      targets: nextBackdrop,
+      alpha: 0.94,
+      duration: 520,
+      ease: "Sine.easeInOut"
+    });
   }
 
   private drawConnections(nodes: WorldNodeDefinition[]): void {
-    const graphics = this.add.graphics().setDepth(1);
+    this.connectionGraphics = this.add.graphics().setDepth(1);
+    this.refreshConnections(nodes);
+  }
+
+  private refreshConnections(nodes: WorldNodeDefinition[]): void {
+    const graphics = this.connectionGraphics;
+
+    if (!graphics) {
+      return;
+    }
+
+    graphics.clear();
     const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    const state = gameManager.getState();
 
     for (const node of nodes) {
       const start = this.getNodePosition(node);
@@ -230,16 +225,20 @@ export class WorldMapScene extends Phaser.Scene {
         const startY = start.y + direction.y * 22;
         const endX = end.x - direction.x * 52;
         const endY = end.y - direction.y * 22;
+        const completed = state.visitedNodeIds.includes(node.id) && state.visitedNodeIds.includes(nextNode.id);
+        const selected = node.id === this.selectedNodeId || nextNode.id === this.selectedNodeId;
+        const reachable = !completed && (state.availableNodeIds.includes(node.id) || state.availableNodeIds.includes(nextNode.id));
+        const color = selected ? COLORS.gold : completed ? 0x647381 : reachable ? region.edge : 0x3b4651;
+        const alpha = selected ? 0.94 : completed ? 0.42 : reachable ? 0.64 : 0.24;
+        const width = selected ? 4 : reachable ? 2.5 : completed ? 2 : 1.5;
 
-        graphics.lineStyle(8, 0x081019, 0.34);
+        graphics.lineStyle(width + 2, 0x071019, selected ? 0.5 : 0.28);
         graphics.lineBetween(startX, startY, endX, endY);
-
-        graphics.lineStyle(3, region.edge, 0.82);
+        graphics.lineStyle(width, color, alpha);
         graphics.lineBetween(startX, startY, endX, endY);
-
-        graphics.fillStyle(region.edge, 0.28);
-        graphics.fillCircle(startX, startY, 4);
-        graphics.fillCircle(endX, endY, 4);
+        graphics.fillStyle(color, alpha * 0.45);
+        graphics.fillCircle(startX, startY, selected ? 4 : 3);
+        graphics.fillCircle(endX, endY, selected ? 4 : 3);
       }
     }
   }
@@ -293,7 +292,7 @@ export class WorldMapScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(19);
     this.add
-      .rectangle(36, 36, 340, 650, COLORS.panel, 0.98)
+      .rectangle(36, 36, 340, 650, COLORS.panel, 1)
       .setOrigin(0)
       .setStrokeStyle(2, COLORS.panelEdge, 1)
       .setScrollFactor(0)
@@ -358,13 +357,6 @@ export class WorldMapScene extends Phaser.Scene {
     const stats = gameManager.getCombatStats();
     const visibleNodes = gameManager.getCurrentChapterWorldNodeDefinitions();
     const selectedNode = gameManager.getWorldNodeDefinition(this.selectedNodeId) ?? visibleNodes[0] ?? null;
-    const ownedTraining = gameManager.getOwnedRunModifierDefinitions();
-    const latestTraining = ownedTraining.slice(-2).map((modifier) => modifier.name);
-    const trainingLabel =
-      latestTraining.length === 0
-        ? "None"
-        : latestTraining.join(", ") + (ownedTraining.length > latestTraining.length ? ` +${ownedTraining.length - latestTraining.length}` : "");
-
     if (!selectedNode && visibleNodes[0]) {
       this.selectedNodeId = visibleNodes[0].id;
     }
@@ -374,11 +366,11 @@ export class WorldMapScene extends Phaser.Scene {
         `Weapon: ${stats.sword.name}`,
         `Branch: ${this.formatCurrentBranch()}`,
         "",
-        formatMaterialInventory(state.materials),
-        "",
-        `Training: ${trainingLabel}`
+        formatMaterialInventory(state.materials)
       ].join("\n")
     );
+
+    this.refreshConnections(visibleNodes);
 
     for (const node of visibleNodes) {
       const handle = this.nodeCards.get(node.id);
@@ -449,8 +441,8 @@ export class WorldMapScene extends Phaser.Scene {
     }
 
     const region = gameManager.getRegionDefinition(selectedNode.regionId);
+    this.updateBiomeBackdrop(selectedNode.regionId);
     const available = gameManager.canTravelToWorldNode(selectedNode.id);
-    const routeTargets = this.getRouteTargets(selectedNode);
     const bossDefinition = selectedNode.bossId ? getBossDefinition(selectedNode.bossId) : null;
     const challengeDefinition = selectedNode.challengeId ? getChallengeShrineDefinition(selectedNode.challengeId) : null;
     const arenaEnvironment = selectedNode.arenaEnvironmentId ? getArenaEnvironmentDefinition(selectedNode.arenaEnvironmentId) : null;
@@ -462,7 +454,6 @@ export class WorldMapScene extends Phaser.Scene {
     this.detailTitleText.setText(selectedNode.title);
     this.detailText.setText(
       [
-        region.name,
         region.theme,
         region.summary,
         "",
@@ -480,8 +471,7 @@ export class WorldMapScene extends Phaser.Scene {
           ? `Boss arena: ${bossDefinition?.arenaTitle ?? selectedNode.title}`
           : selectedNode.type === "battle" || selectedNode.type === "miniboss" || selectedNode.type === "challenge"
             ? `Enemy roster: ${region.enemyRoster.join(", ")}`
-            : `Site: ${this.describeNodeType(selectedNode)}`,
-        routeTargets.length > 0 ? `Useful for: ${routeTargets.join(", ")}` : "Useful for: General expedition stock"
+            : `Site: ${this.describeNodeType(selectedNode)}`
       ]
         .filter((entry) => entry.length > 0)
         .join("\n")
@@ -518,6 +508,8 @@ export class WorldMapScene extends Phaser.Scene {
       return;
     }
 
+    this.forcedTestNodeId = forceTravel ? node.id : null;
+
     if (node.type === "battle" || node.type === "miniboss" || node.type === "boss" || node.type === "challenge") {
       gameManager.startWorldNode(this, node.id, forceTravel);
       return;
@@ -533,7 +525,7 @@ export class WorldMapScene extends Phaser.Scene {
       return;
     }
 
-    if (gameManager.resolveWorldNodeVisit(node.id)) {
+    if (gameManager.resolveWorldNodeVisit(node.id, forceTravel)) {
       this.feedbackText.setText(node.type === "relic" ? "Relic secured. Back to the forge." : "Route resolved. Back to the forge.");
       this.time.delayedCall(160, () => {
         if (this.sys.isActive()) {
@@ -598,7 +590,7 @@ export class WorldMapScene extends Phaser.Scene {
         accent: index === 0 ? 0x49634e : 0x5c4f39,
         scrollFactor: 0,
         onClick: () => {
-          if (gameManager.completeMerchantExchange(node.id, option.payment, option.reward)) {
+          if (gameManager.completeMerchantExchange(node.id, option.payment, option.reward, this.forcedTestNodeId === node.id)) {
             container.destroy();
             this.merchantOverlay = null;
             this.feedbackText.setText("Trade made. Back to the forge.");
@@ -641,7 +633,7 @@ export class WorldMapScene extends Phaser.Scene {
     const eventDefinition = node.eventId ? getRunEventDefinition(node.eventId) : undefined;
 
     if (!eventDefinition) {
-      if (gameManager.resolveWorldNodeVisit(node.id)) {
+      if (gameManager.resolveWorldNodeVisit(node.id, this.forcedTestNodeId === node.id)) {
         this.feedbackText.setText("Route resolved. Back to the forge.");
         gameManager.openForge(this);
       } else {
@@ -740,7 +732,7 @@ export class WorldMapScene extends Phaser.Scene {
   }
 
   private resolveEventChoice(node: WorldNodeDefinition, choice: RunEventChoice, container: Phaser.GameObjects.Container): void {
-    if (gameManager.resolveRunEvent(node.id, choice.payment, choice.reward, choice.modifierId, choice.upgradeSwordId)) {
+    if (gameManager.resolveRunEvent(node.id, choice.payment, choice.reward, choice.modifierId, choice.upgradeSwordId, this.forcedTestNodeId === node.id)) {
       container.destroy();
       this.eventOverlay = null;
       this.feedbackText.setText(
@@ -863,7 +855,6 @@ export class WorldMapScene extends Phaser.Scene {
       if (
         gameManager.isTestModeEnabled() &&
         node &&
-        (node.type === "battle" || node.type === "miniboss" || node.type === "boss") &&
         !gameManager.canTravelToWorldNode(node.id)
       ) {
         const now = this.time.now;
@@ -1385,30 +1376,6 @@ export class WorldMapScene extends Phaser.Scene {
       default:
         return "Combat route";
     }
-  }
-
-  private getRouteTargets(node: WorldNodeDefinition): string[] {
-    const state = gameManager.getState();
-
-    return gameManager
-      .getWeaponTechRoster()
-      .filter((definition) => !state.unlockedTechNodeIds.includes(definition.id))
-      .filter((definition) => !gameManager.getWeaponTechBlockingNode(definition.id))
-      .map((definition) => {
-        const score = materialCostEntries(definition.cost).reduce((sum, [materialId, amount]) => {
-          const reward = node.rewardMaterials[materialId] ?? 0;
-          return sum + Math.min(amount, reward);
-        }, 0);
-
-        return {
-          name: definition.name,
-          score
-        };
-      })
-      .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 3)
-      .map((entry) => entry.name);
   }
 
   private formatCurrentBranch(): string {
