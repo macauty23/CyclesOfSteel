@@ -48,6 +48,7 @@ interface ArenaTargetState {
   isAttacking: boolean;
   isDashing: boolean;
   isParrying: boolean;
+  isFooling?: boolean;
 }
 
 function createImpact(
@@ -278,6 +279,12 @@ export class BossEnemy {
     this.updateOrbitAwareness(targetX, targetY, normalized, distance, deltaMs);
     this.updateFacing(normalized, targetX, targetY, distance, deltaMs);
 
+    // Fool tempts a boss into its next authored action sooner without replacing
+    // that boss's move selection, phase logic, or arena scripting.
+    if (targetState.isFooling) {
+      this.attackCooldownRemaining = Math.min(this.attackCooldownRemaining, 88);
+    }
+
     const result: EnemyUpdateResult = {};
     const attackResult = this.updateAttackState(deltaMs);
 
@@ -439,6 +446,16 @@ export class BossEnemy {
     }
 
     this.syncPresentation();
+  }
+
+  breakGuard(stunMs: number): void {
+    if (!this.alive || this.phaseTransitionRemaining > 0) {
+      return;
+    }
+
+    this.guardRemaining = 0;
+    this.counterQueued = false;
+    this.stun(stunMs);
   }
 
   private getCurrentAttackKit(): BossAttackKit {
@@ -1094,6 +1111,10 @@ export class BossEnemy {
 
     if (this.postTeleportRecoveryRemaining > 0) {
       return false;
+    }
+
+    if (targetState.isFooling && distance <= kit.heavy.range * 1.04) {
+      return true;
     }
 
     switch (this.definition.id) {

@@ -203,7 +203,6 @@ const CORRIDOR_ARENA_REGIONS = new Set<RegionId>([
 
 function summarizeEnemyRoster(regionId: RegionId): string[] {
   return BIOME_ENEMY_POOLS[regionId]
-    .slice(0, 3)
     .map((enemyId) => ENEMY_DEFINITIONS[enemyId]?.name ?? enemyId);
 }
 
@@ -1092,6 +1091,17 @@ function pickEnemyForNode(regionId: RegionId, recentEnemyIds: EnemyId[] = []): E
   return pickOne(filteredPool.length > 0 ? filteredPool : pool);
 }
 
+/**
+ * Elite opponents are chosen once while the route is generated. Keeping this
+ * distinct from the ordinary encounter roll makes the node's advertised foe
+ * stable through saving, loading, and the later combat handoff.
+ */
+function pickEliteEnemyForNode(regionId: RegionId, recentEnemyIds: EnemyId[] = []): EnemyId {
+  const elitePool = BIOME_ENEMY_POOLS[regionId];
+  const unseenElitePool = elitePool.filter((enemyId) => !recentEnemyIds.includes(enemyId));
+  return pickOne(unseenElitePool.length > 0 ? unseenElitePool : elitePool);
+}
+
 function createRewardMaterials(regionId: RegionId, nodeType: WorldNodeType, depth: number, chapterIndex: number): MaterialCost {
   const region = EXPEDITION_REGIONS[regionId];
   const reward: MaterialCost = {};
@@ -1688,10 +1698,16 @@ export function generateWorldChapter(params: {
     const eliteTitleDefinition = eliteTitleId ? getEliteTitleDefinition(eliteTitleId) : undefined;
     const challengeRelicId = resolvedType === "challenge" ? pickChallengeRelicId(ownedRelicIds) : undefined;
     const shouldAttachRelic = resolvedType === "relic" && regionRelicId && !ownedRelicIds.includes(regionRelicId);
+    const eliteEnemyId =
+      resolvedType === "miniboss"
+        ? pickEliteEnemyForNode(node.regionId, recentEnemyIdsByRegion.get(node.regionId) ?? [])
+        : undefined;
     const enemyId =
       resolvedType === "boss"
         ? bossDefinition?.proxyEnemyId
-        : resolvedType === "battle" || resolvedType === "miniboss" || resolvedType === "challenge"
+        : resolvedType === "miniboss"
+          ? eliteEnemyId
+        : resolvedType === "battle" || resolvedType === "challenge"
         ? pickEnemyForNode(node.regionId, recentEnemyIdsByRegion.get(node.regionId) ?? [])
         : undefined;
     const enemy = enemyId ? getEnemyDefinition(enemyId) : null;
@@ -1728,6 +1744,7 @@ export function generateWorldChapter(params: {
       }
     }
     node.enemyId = enemyId;
+    node.eliteEnemyId = eliteEnemyId;
     node.bossId = bossId;
     node.eventId = eventId;
     node.challengeId = challengeId;
@@ -1789,6 +1806,7 @@ export function generateWorldChapter(params: {
       nextNodeIds: [],
       rewardMaterials: {} as MaterialCost,
       enemyId: undefined,
+      eliteEnemyId: undefined,
       armor: undefined,
       pattern: undefined,
       optional: false,
@@ -2038,7 +2056,11 @@ export function resolveWorldEncounter(node: WorldNodeDefinition, levelNumber: nu
   const eliteTitleDefinition = node.eliteTitleId ? getEliteTitleDefinition(node.eliteTitleId) : null;
   const challengeDefinition = node.challengeId ? getChallengeShrineDefinition(node.challengeId) : null;
   const arenaEnvironment = node.arenaEnvironmentId ? getArenaEnvironmentDefinition(node.arenaEnvironmentId) : null;
-  const enemy = getEnemyDefinition(node.enemyId ?? bossDefinition?.proxyEnemyId ?? BIOME_ENEMY_POOLS[node.regionId][0]);
+  const enemy = getEnemyDefinition(
+    (node.type === "miniboss" ? node.eliteEnemyId ?? node.enemyId : node.enemyId) ??
+      bossDefinition?.proxyEnemyId ??
+      BIOME_ENEMY_POOLS[node.regionId][0]
+  );
   const boss = Boolean(bossDefinition);
   const depthWeight = node.depth * 0.8 + expeditionTier * 0.9;
   const lateGamePressure = Math.max(0, expeditionTier - 1);
@@ -2093,7 +2115,7 @@ export function resolveWorldEncounter(node: WorldNodeDefinition, levelNumber: nu
     challengeRuleText: challengeDefinition?.ruleText,
     arenaEnvironmentId: arenaEnvironment?.id,
     arenaEnvironmentName: arenaEnvironment?.name,
-    enemyRoster: bossDefinition ? [bossDefinition.name, bossDefinition.typeName] : region.enemyRoster,
+    enemyRoster: bossDefinition ? [bossDefinition.name, bossDefinition.typeName] : node.type === "miniboss" ? [enemy.name] : region.enemyRoster,
     armor: bossDefinition?.armor ?? eliteTitleDefinition?.armorOverride ?? node.armor ?? enemy.armor,
     enemyHp: bossDefinition ? bossDefinition.phaseHp[0] : Math.round(baseEnemyHp * eliteHpScale),
     enemySpeed: Math.round(

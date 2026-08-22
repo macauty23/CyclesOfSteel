@@ -1,5 +1,13 @@
 import Phaser from "phaser";
-import type { AttackExecutionSignal, AttackKind, CombatStats, CombatStatusSnapshot } from "../core/types";
+import type {
+  AttackExecutionSignal,
+  AttackKind,
+  BindFollowupType,
+  CombatStats,
+  CombatStatusSnapshot,
+  GuardType
+} from "../core/types";
+import { COMBAT_TUNING } from "./combatTuning";
 
 type ControlledActor = Phaser.GameObjects.Rectangle & {
   body: Phaser.Physics.Arcade.Body;
@@ -13,6 +21,7 @@ type ControlKeys = {
   dash: Phaser.Input.Keyboard.Key | null;
   altDash: Phaser.Input.Keyboard.Key | null;
   parry: Phaser.Input.Keyboard.Key | null;
+  guard: Phaser.Input.Keyboard.Key | null;
   light: Phaser.Input.Keyboard.Key | null;
   heavy: Phaser.Input.Keyboard.Key | null;
 };
@@ -37,6 +46,9 @@ interface CombatControllerConfig {
   onAttackActive: (signal: AttackExecutionSignal) => void;
   onAttackEnded: (signal: AttackExecutionSignal) => void;
   onDashStart?: (direction: { x: number; y: number }) => void;
+  onBindDecisionResolved?: (type: BindFollowupType) => void;
+  onGuardExit?: (type: GuardType) => void;
+  onGuardBreak?: () => void;
 }
 
 export class CombatController {
@@ -53,6 +65,9 @@ export class CombatController {
   private readonly onAttackActive: (signal: AttackExecutionSignal) => void;
   private readonly onAttackEnded: (signal: AttackExecutionSignal) => void;
   private readonly onDashStart?: (direction: { x: number; y: number }) => void;
+  private readonly onBindDecisionResolved?: (type: BindFollowupType) => void;
+  private readonly onGuardExit?: (type: GuardType) => void;
+  private readonly onGuardBreak?: () => void;
 
   private readonly movementInput = new Phaser.Math.Vector2();
   private readonly facing = new Phaser.Math.Vector2(1, 0);
@@ -69,6 +84,13 @@ export class CombatController {
   private moveBoostRemaining = 0;
   private moveBoostMultiplier = 1;
   private stamina = 0;
+  private isGuarding = false;
+  private guardType: GuardType = "plow";
+  private guardBreakRemaining = 0;
+  private bindDecisionRemaining = 0;
+  private queuedBindFollowup: BindFollowupType | null = null;
+  private recentFollowupCandidate: { type: Exclude<BindFollowupType, "defensive">; remaining: number } | null = null;
+  private suppressAttacksUntilReleased = false;
   private previousPrimaryDown = false;
   private previousSecondaryDown = false;
 
@@ -84,7 +106,10 @@ export class CombatController {
       onActionRejected,
       onAttackActive,
       onAttackEnded,
-      onDashStart
+      onDashStart,
+      onBindDecisionResolved,
+      onGuardExit,
+      onGuardBreak
     } = config;
     const keyboard = scene.input.keyboard;
 
@@ -99,6 +124,9 @@ export class CombatController {
     this.onAttackActive = onAttackActive;
     this.onAttackEnded = onAttackEnded;
     this.onDashStart = onDashStart;
+    this.onBindDecisionResolved = onBindDecisionResolved;
+    this.onGuardExit = onGuardExit;
+    this.onGuardBreak = onGuardBreak;
     this.keys = keyboard
       ? (keyboard.addKeys({
           up: Phaser.Input.Keyboard.KeyCodes.W,
@@ -108,6 +136,7 @@ export class CombatController {
           dash: Phaser.Input.Keyboard.KeyCodes.SHIFT,
           altDash: Phaser.Input.Keyboard.KeyCodes.SPACE,
           parry: Phaser.Input.Keyboard.KeyCodes.Q,
+          guard: Phaser.Input.Keyboard.KeyCodes.E,
           light: Phaser.Input.Keyboard.KeyCodes.J,
           heavy: Phaser.Input.Keyboard.KeyCodes.K
         }) as ControlKeys)
@@ -119,6 +148,7 @@ export class CombatController {
           dash: null,
           altDash: null,
           parry: null,
+          guard: null,
           light: null,
           heavy: null
         };
@@ -159,7 +189,12 @@ export class CombatController {
       staminaMax: this.stats.staminaMax,
       isDashing: this.dashRemaining > 0,
       isAttacking: this.currentAttack !== null,
-      isParrying: this.parryWindowRemaining > 0 || this.parryGraceRemaining > 0
+      isParrying: this.parryWindowRemaining > 0 || this.parryGraceRemaining > 0,
+      isGuarding: this.isGuarding,
+      guardType: this.isGuarding ? this.guardType : null,
+      guardBreakRemaining: this.guardBreakRemaining,
+      bindDecisionRemaining: this.bindDecisionRemaining,
+      isBindDecisionActive: this.bindDecisionRemaining > 0
     };
   }
 
@@ -211,12 +246,43 @@ export class CombatController {
     this.controlLockRemaining = Math.max(this.controlLockRemaining, durationMs);
   }
 
+  /** Called by the scene only after it has confirmed that a parry connected. */
   resolveParrySuccess(): void {
     this.parryWindowRemaining = 0;
     this.parryGraceRemaining = 0;
     this.parryRecoveryRemaining = 0;
     this.parryCooldownRemaining = Math.max(0, this.parryCooldownRemaining - 90);
     this.actor.body.setAcceleration(0, 0);
+    this.beginBindDecision();
+  }
+
+  trySpendStamina(amount: number): boolean {
+    if (amount <= 0) {
+      return true;
+    }
+
+    if (this.stamina + 0.001 < amount) {
+      return false;
+    }
+
+    this.stamina = Math.max(0, this.stamina - amount);
+    return true;
+  }
+
+  /** Returns true when a held guard absorbed the incoming attack. */
+  absorbGuardImpact(baseCost: number): boolean {
+    if (!this.isGuarding || this.guardType === "fool") {
+      return false;
+    }
+
+    const guardTuning = COMBAT_TUNING.guard.type[this.guardType];
+    this.stamina = Math.max(0, this.stamina - Math.max(0, baseCost * guardTuning.blockCostMultiplier));
+
+    if (this.stamina <= 0) {
+      this.triggerGuardBreak();
+    }
+
+    return true;
   }
 
   private updateTimers(deltaMs: number): void {
@@ -227,6 +293,30 @@ export class CombatController {
     this.parryGraceRemaining = Math.max(0, this.parryGraceRemaining - deltaMs);
     this.controlLockRemaining = Math.max(0, this.controlLockRemaining - deltaMs);
     this.moveBoostRemaining = Math.max(0, this.moveBoostRemaining - deltaMs);
+    this.guardBreakRemaining = Math.max(0, this.guardBreakRemaining - deltaMs);
+    if (this.recentFollowupCandidate) {
+      this.recentFollowupCandidate.remaining = Math.max(0, this.recentFollowupCandidate.remaining - deltaMs);
+      if (this.recentFollowupCandidate.remaining === 0) {
+        this.recentFollowupCandidate = null;
+      }
+    }
+
+    if (this.bindDecisionRemaining > 0) {
+      this.bindDecisionRemaining = Math.max(0, this.bindDecisionRemaining - deltaMs);
+      if (this.queuedBindFollowup) {
+        this.resolveBindDecision(this.queuedBindFollowup);
+      } else if (this.bindDecisionRemaining === 0) {
+        this.resolveBindDecision("standard");
+      }
+    }
+
+    if (this.isGuarding) {
+      const passiveDrain = (COMBAT_TUNING.guard.type[this.guardType].passiveDrainPerSecond * deltaMs) / 1000;
+      this.stamina = Math.max(0, this.stamina - passiveDrain);
+      if (this.stamina <= 0) {
+        this.triggerGuardBreak();
+      }
+    }
     this.regenerateStamina(deltaMs);
 
     if (this.dashRemaining > 0) {
@@ -318,6 +408,59 @@ export class CombatController {
     this.previousPrimaryDown = primaryDown;
     this.previousSecondaryDown = secondaryDown;
 
+    if (lightPressed) {
+      this.recentFollowupCandidate = { type: "standard", remaining: 90 };
+    } else if (heavyPressed) {
+      this.recentFollowupCandidate = { type: "offensive", remaining: 90 };
+    }
+
+    if (this.bindDecisionRemaining > 0) {
+      if (parryPressed) {
+        this.queuedBindFollowup = "defensive";
+      } else if (heavyPressed) {
+        this.queuedBindFollowup = "offensive";
+      } else if (lightPressed) {
+        this.queuedBindFollowup = "standard";
+      }
+      return;
+    }
+
+    const guardHeld = this.keys.guard?.isDown === true;
+
+    if (this.isGuarding) {
+      if (!guardHeld) {
+        this.exitGuard();
+      } else {
+        this.guardType = this.resolveHeldGuardType(primaryDown, secondaryDown);
+      }
+      return;
+    }
+
+    if (
+      guardHeld &&
+      this.guardBreakRemaining <= 0 &&
+      this.controlLockRemaining <= 0 &&
+      !this.currentAttack &&
+      this.dashRemaining <= 0 &&
+      this.parryRecoveryRemaining <= 0 &&
+      this.parryWindowRemaining <= 0
+    ) {
+      this.startGuard(this.resolveHeldGuardType(primaryDown, secondaryDown));
+      return;
+    }
+
+    if (this.suppressAttacksUntilReleased) {
+      if (!this.isLightInputDown() && !this.isHeavyInputDown()) {
+        this.suppressAttacksUntilReleased = false;
+      } else {
+        return;
+      }
+    }
+
+    if (this.guardBreakRemaining > 0) {
+      return;
+    }
+
     if (
       this.controlLockRemaining <= 0 &&
       !this.currentAttack &&
@@ -372,6 +515,26 @@ export class CombatController {
     if (this.controlLockRemaining > 0) {
       this.actor.body.setAcceleration(0, 0);
       this.actor.body.setVelocity(this.actor.body.velocity.x * 0.88, this.actor.body.velocity.y * 0.88);
+      return;
+    }
+
+    if (this.guardBreakRemaining > 0) {
+      this.actor.body.setAcceleration(0, 0);
+      this.actor.body.setVelocity(this.actor.body.velocity.x * 0.82, this.actor.body.velocity.y * 0.82);
+      return;
+    }
+
+    if (this.isGuarding) {
+      const guardMoveSpeed = this.stats.moveSpeed * COMBAT_TUNING.guard.movementScale;
+      this.actor.body.setMaxVelocity(guardMoveSpeed, guardMoveSpeed);
+      if (this.movementInput.lengthSq() === 0) {
+        this.actor.body.setAcceleration(0, 0);
+      } else {
+        this.actor.body.setAcceleration(
+          this.movementInput.x * this.stats.moveAcceleration * COMBAT_TUNING.guard.movementScale,
+          this.movementInput.y * this.stats.moveAcceleration * COMBAT_TUNING.guard.movementScale
+        );
+      }
       return;
     }
 
@@ -433,6 +596,7 @@ export class CombatController {
   }
 
   private startParry(): void {
+    this.recentFollowupCandidate = null;
     this.parryWindowRemaining = this.stats.parryWindow;
     this.parryGraceRemaining = Math.max(24, Math.round(this.stats.parryWindow * 0.22));
     this.parryRecoveryRemaining = this.stats.parryWindow + this.stats.parryRecovery;
@@ -494,6 +658,9 @@ export class CombatController {
   }
 
   private regenerateStamina(deltaMs: number): void {
+    if (this.isGuarding || this.guardBreakRemaining > 0) {
+      return;
+    }
     const actionScale =
       this.currentAttack && this.currentAttack.phase !== "recovery"
         ? 0.28
@@ -526,6 +693,80 @@ export class CombatController {
 
   private isHeavyInputHeld(): boolean {
     return this.keys.heavy?.isDown === true || this.pointer.rightButtonDown();
+  }
+
+  private beginBindDecision(): void {
+    this.bindDecisionRemaining = COMBAT_TUNING.bind.decisionWindowMs;
+    this.queuedBindFollowup =
+      this.recentFollowupCandidate && this.recentFollowupCandidate.remaining > 0
+        ? this.recentFollowupCandidate.type
+        : null;
+    this.recentFollowupCandidate = null;
+  }
+
+  private resolveBindDecision(type: BindFollowupType): void {
+    if (this.bindDecisionRemaining <= 0 && !this.queuedBindFollowup) {
+      return;
+    }
+
+    this.bindDecisionRemaining = 0;
+    this.queuedBindFollowup = null;
+    this.recentFollowupCandidate = null;
+    this.onBindDecisionResolved?.(type);
+  }
+
+  private startGuard(type: GuardType): void {
+    this.isGuarding = true;
+    this.guardType = type;
+    this.actor.body.setAcceleration(0, 0);
+    this.actor.body.setVelocity(this.actor.body.velocity.x * 0.58, this.actor.body.velocity.y * 0.58);
+  }
+
+  private exitGuard(): void {
+    const exitedType = this.guardType;
+    this.isGuarding = false;
+    this.suppressAttacksUntilReleased = true;
+    this.onGuardExit?.(exitedType);
+  }
+
+  private triggerGuardBreak(): void {
+    if (!this.isGuarding && this.guardBreakRemaining > 0) {
+      return;
+    }
+
+    this.isGuarding = false;
+    this.guardBreakRemaining = COMBAT_TUNING.guard.breakStaggerMs;
+    this.controlLockRemaining = Math.max(this.controlLockRemaining, COMBAT_TUNING.guard.breakStaggerMs);
+    this.parryWindowRemaining = 0;
+    this.parryGraceRemaining = 0;
+    this.parryRecoveryRemaining = 0;
+    this.actor.body.setAcceleration(0, 0);
+    this.actor.body.setVelocity(this.actor.body.velocity.x * 0.38, this.actor.body.velocity.y * 0.38);
+    this.onGuardBreak?.();
+  }
+
+  private resolveHeldGuardType(primaryDown: boolean, secondaryDown: boolean): GuardType {
+    if (this.keys.altDash?.isDown) {
+      return "fool";
+    }
+
+    if (secondaryDown || this.keys.heavy?.isDown) {
+      return "day";
+    }
+
+    if (primaryDown || this.keys.light?.isDown) {
+      return "ox";
+    }
+
+    return "plow";
+  }
+
+  private isLightInputDown(): boolean {
+    return this.pointer.leftButtonDown() || this.keys.light?.isDown === true;
+  }
+
+  private isHeavyInputDown(): boolean {
+    return this.pointer.rightButtonDown() || this.keys.heavy?.isDown === true;
   }
 
   private isJustDown(key: Phaser.Input.Keyboard.Key | null | undefined): boolean {

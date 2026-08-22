@@ -145,14 +145,14 @@ const TUTORIAL_COMBAT_PAGES: Record<string, GuidedOverlayPage[]> = {
   "tutorial-plains": [
     {
       title: "Move First",
-      body: "Move with WASD or arrows. Dash with Shift or Space. Attack with J/LMB or K/RMB, but only when you are in measure.",
+      body: "Move with WASD or arrows. Dash with Shift or Space. Hold E to Guard. Attack with J/LMB or K/RMB, but only when you are in measure.",
       accent: 0x7bc18e
     }
   ],
   "tutorial-savannah": [
     {
       title: "Bind And Stamina",
-      body: "Press Q on impact to bind. Dashes and attacks spend stamina, so recover before forcing another exchange.",
+      body: "Press Q on impact to bind, then choose LMB Standard, Q Defensive, or RMB Offensive. Dashes, Guard, and attacks spend stamina, so recover before forcing another exchange.",
       accent: 0x8db56d
     }
   ],

@@ -7,18 +7,21 @@ import {
 } from "../tutorial/tutorialData";
 import { createGuidedOverlay, type GuidedOverlayHandle } from "../ui/createGuidedOverlay";
 import { createButton, type ButtonHandle } from "../ui/createButton";
+import { fadeInMajorScene } from "../ui/sceneFades";
 import { applyLocalizedText, localizeTextStyle, translateUiText } from "../ui/localization";
 import { COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
 
 export class MainMenuScene extends Phaser.Scene {
   private feedbackText!: Phaser.GameObjects.Text;
   private menuOverlay: GuidedOverlayHandle | null = null;
+  private settingsOverlay: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super(SCENE_KEYS.MainMenu);
   }
 
   create(): void {
+    fadeInMajorScene(this);
     this.paintBackdrop();
 
     applyLocalizedText(
@@ -59,6 +62,7 @@ export class MainMenuScene extends Phaser.Scene {
         "Move with WASD or the arrow keys.",
         "Dash with Shift or Space.",
         "Bind with Q to turn incoming strikes aside.",
+        "Hold E to Guard: E+RMB Day, E+LMB Ox, E+Space Fool.",
         "Use J or left mouse for light attacks.",
         "Use K or right mouse for heavy attacks.",
         "Aim with the mouse to keep attacks precise.",
@@ -108,22 +112,18 @@ export class MainMenuScene extends Phaser.Scene {
       onClick: () => gameManager.openTutorial(this)
     });
 
-    const thaiModeButton = createButton({
+    const settingsButton = createButton({
       scene: this,
       x: 138,
       y: 56,
       width: 220,
       height: 58,
-      label: "Thai Mode",
-      hint: gameManager.isThaiModeEnabled() ? "Menu text in Thai" : "Translate menu text",
+      label: "Settings",
+      hint: "Game options",
       accent: 0x4b3a2b,
-      selected: gameManager.isThaiModeEnabled(),
-      onClick: () => {
-        gameManager.toggleThaiModeEnabled();
-        this.scene.restart();
-      }
+      onClick: () => this.openSettingsMenu()
     });
-    thaiModeButton.root.setDepth(6);
+    settingsButton.root.setDepth(6);
 
     const testModeButton = createButton({
       scene: this,
@@ -178,6 +178,85 @@ export class MainMenuScene extends Phaser.Scene {
     });
   }
 
+  private openSettingsMenu(): void {
+    if (this.settingsOverlay || this.menuOverlay) {
+      return;
+    }
+
+    const depth = 60;
+    const centerX = VIEWPORT.width * 0.5;
+    const centerY = VIEWPORT.height * 0.5;
+    const veil = this.add
+      .rectangle(centerX, centerY, VIEWPORT.width, VIEWPORT.height, 0x05090f, 0.76)
+      .setInteractive()
+      .setScrollFactor(0);
+    const panel = this.add
+      .rectangle(centerX, centerY, 500, 250, COLORS.panel, 0.98)
+      .setStrokeStyle(2, COLORS.panelEdge, 1)
+      .setScrollFactor(0);
+    const accentBar = this.add
+      .rectangle(centerX, centerY - 109, 468, 8, COLORS.gold, 1)
+      .setScrollFactor(0);
+    const title = this.add
+      .text(centerX, centerY - 84, "", localizeTextStyle(TEXT.heading))
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0);
+    const language = this.add
+      .text(centerX, centerY - 36, "", localizeTextStyle({
+        ...TEXT.small,
+        color: colorHex(COLORS.subtext)
+      }))
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0);
+
+    applyLocalizedText(title, "Settings");
+    applyLocalizedText(language, "Language");
+
+    const root = this.add.container(0, 0, [veil, panel, accentBar, title, language]);
+    root.setDepth(depth).setScrollFactor(0);
+    this.settingsOverlay = root;
+
+    const thaiModeButton = createButton({
+      scene: this,
+      x: centerX,
+      y: centerY + 16,
+      width: 260,
+      height: 58,
+      label: "Thai Mode",
+      hint: gameManager.isThaiModeEnabled() ? "Menu text in Thai" : "Translate menu text",
+      accent: 0x4b3a2b,
+      selected: gameManager.isThaiModeEnabled(),
+      scrollFactor: 0,
+      onClick: () => {
+        this.closeSettingsMenu();
+        gameManager.toggleThaiModeEnabled();
+        this.scene.restart();
+      }
+    });
+    thaiModeButton.root.setDepth(depth + 1);
+    root.add(thaiModeButton.root);
+
+    const closeButton = createButton({
+      scene: this,
+      x: centerX,
+      y: centerY + 88,
+      width: 180,
+      height: 52,
+      label: "Close",
+      accent: 0x45413d,
+      scrollFactor: 0,
+      onClick: () => this.closeSettingsMenu()
+    });
+    closeButton.root.setDepth(depth + 1);
+    root.add(closeButton.root);
+
+    veil.on("pointerup", () => this.closeSettingsMenu());
+  }
+
+  private closeSettingsMenu(): void {
+    this.settingsOverlay?.destroy(true);
+    this.settingsOverlay = null;
+  }
   private handleTestModeToggle(testModeButton: ButtonHandle): void {
     if (gameManager.isTestModeEnabled()) {
       gameManager.setTestModeEnabled(false);

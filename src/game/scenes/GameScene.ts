@@ -6,6 +6,7 @@ import type {
   AttackKind,
   AttackProfile,
   AttackShape,
+  BindFollowupType,
   CombatStatusSnapshot,
   CombatStats,
   EncounterConfig,
@@ -14,6 +15,7 @@ import type {
   EnemyArmorTier,
   EnemySpecialId,
   HitImpactProfile,
+  GuardType,
   MaterialCost,
   RunModifierId
 } from "../core/types";
@@ -25,6 +27,7 @@ import { BossEnemy } from "../entities/BossEnemy";
 import { MaterialPickup } from "../entities/MaterialPickup";
 import { PlaceholderEnemy } from "../entities/PlaceholderEnemy";
 import { CombatController } from "../systems/CombatController";
+import { COMBAT_TUNING } from "../systems/combatTuning";
 import {
   TUTORIAL_COMPLETION_PAGES,
   TUTORIAL_FINAL_NODE_ID,
@@ -34,6 +37,7 @@ import {
 import { createGuidedOverlay, type GuidedOverlayHandle } from "../ui/createGuidedOverlay";
 import { createButton } from "../ui/createButton";
 import { getBiomeBackgroundKey, preloadBiomeBackgrounds } from "../ui/biomeBackgrounds";
+import { fadeInMajorScene } from "../ui/sceneFades";
 import { ARENA, COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
 
 const RAPIER_TEXTURE_KEY = "player-rapier";
@@ -106,6 +110,16 @@ interface HolyFieldState {
   remaining: number;
 }
 
+interface BindDecisionContext {
+  source: "melee" | "projectile";
+  signal: AttackExecutionSignal;
+  perfect: boolean;
+  contactX: number;
+  contactY: number;
+  beastBind: boolean;
+  foolBaited: boolean;
+}
+
 export class GameScene extends Phaser.Scene {
   private player!: PlayerBody;
   private playerWeaponBlade!: Phaser.GameObjects.Rectangle;
@@ -162,6 +176,13 @@ export class GameScene extends Phaser.Scene {
   private postBindThrustCharges = 0;
   private postBindRewardRemaining = 0;
   private guardDamageScalePending = 1;
+  private pendingBindDecision: BindDecisionContext | null = null;
+  private plowBindImpactRemaining = 0;
+  private dayStrikeRemaining = 0;
+  private oxStrikeRemaining = 0;
+  private foolState: "idle" | "baited" | "punishReady" = "idle";
+  private foolStateRemaining = 0;
+  private foolBaitAttackId: number | null = null;
   private recentDashAttackWindowRemaining = 0;
   private dashPassBuffRemaining = 0;
   private dashPassTriggeredThisDash = false;
@@ -216,6 +237,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    fadeInMajorScene(this);
     this.physics.world.resume();
     this.pickups = [];
     this.activeAttack = null;
@@ -240,6 +262,13 @@ export class GameScene extends Phaser.Scene {
     this.postBindThrustCharges = 0;
     this.postBindRewardRemaining = 0;
     this.guardDamageScalePending = 1;
+    this.pendingBindDecision = null;
+    this.plowBindImpactRemaining = 0;
+    this.dayStrikeRemaining = 0;
+    this.oxStrikeRemaining = 0;
+    this.foolState = "idle";
+    this.foolStateRemaining = 0;
+    this.foolBaitAttackId = null;
     this.recentDashAttackWindowRemaining = 0;
     this.dashPassBuffRemaining = 0;
     this.dashPassTriggeredThisDash = false;
@@ -349,7 +378,10 @@ export class GameScene extends Phaser.Scene {
       onDashStart: (direction) => {
         this.recentDashAttackWindowRemaining = 280;
         this.playDashEffect(direction);
-      }
+      },
+      onBindDecisionResolved: (type) => this.resolveBindDecision(type),
+      onGuardExit: (type) => this.applyGuardExitBenefit(type),
+      onGuardBreak: () => this.handleGuardBreak()
     });
 
     this.add
@@ -712,6 +744,8 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
+    this.updateCombatPolishStates(delta);
+
     if (this.comboTimerRemaining > 0) {
       this.comboTimerRemaining = Math.max(0, this.comboTimerRemaining - delta);
 
@@ -723,6 +757,12 @@ export class GameScene extends Phaser.Scene {
     if (!this.combatLocked) {
       this.controller.update(delta);
       const playerStatus = this.controller.getStatus();
+      if (
+        this.foolState === "baited" &&
+        ((playerStatus.isGuarding && playerStatus.guardType !== "fool") || playerStatus.isAttacking || playerStatus.isDashing)
+      ) {
+        this.clearFoolState();
+      }
       this.updateRelicStates(playerStatus, delta);
       this.tryUseSwordActiveAbility();
       const enemyEvents = this.enemy.update(
@@ -731,10 +771,16 @@ export class GameScene extends Phaser.Scene {
         {
           isAttacking: playerStatus.isAttacking,
           isDashing: playerStatus.isDashing,
-          isParrying: playerStatus.isParrying
+          isParrying: playerStatus.isParrying,
+          isFooling: playerStatus.isGuarding && playerStatus.guardType === "fool"
         },
         delta
       );
+
+      const enemyTelegraph = this.enemy.getTelegraphSignal();
+      if (playerStatus.isGuarding && playerStatus.guardType === "fool" && enemyTelegraph) {
+        this.armFoolBait(enemyTelegraph);
+      }
 
       if (enemyEvents.activatedAttack) {
         this.openEnemyAttackWindow(enemyEvents.activatedAttack);
@@ -774,7 +820,7 @@ export class GameScene extends Phaser.Scene {
 
   private getControlHintText(): string {
     const activeHint = this.currentStats.sword.techniques.activeAbilityName ? "  Active F" : "";
-    return `Move WASD/Arrows  Dash Shift/Space  Bind Q${activeHint}\nLight J/LMB  Heavy K/RMB`;
+    return `Move WASD/Arrows  Dash Shift/Space  Bind Q  Guard E${activeHint}\nLight J/LMB  Heavy K/RMB  E+RMB Day  E+LMB Ox  E+Space Fool`;
   }
 
   private updateRelicStates(playerStatus: ReturnType<CombatController["getStatus"]>, delta: number): void {
@@ -1599,6 +1645,8 @@ export class GameScene extends Phaser.Scene {
     const profile = {
       ...signal.profile
     };
+    let rangeAnchor = signal.rangeAnchor;
+    let guardEmpowerment = signal.guardEmpowerment;
 
     profile.damage += this.currentStats.damageBonus;
     profile.range += this.currentStats.reachBonus;
@@ -1697,8 +1745,36 @@ export class GameScene extends Phaser.Scene {
       profile.range = Math.max(minimumReach, profile.range - this.judgmentRangePenalty);
     }
 
+    if (this.foolState === "punishReady" && this.foolStateRemaining > 0) {
+      profile.damage = Math.round(profile.damage * COMBAT_TUNING.fool.punishDamageMultiplier);
+      profile.impact = {
+        ...profile.impact,
+        displacement: Math.round(profile.impact.displacement * 1.45),
+        controlLossMs: Math.round(profile.impact.controlLossMs * 1.55),
+        interruptChance: Math.min(0.98, profile.impact.interruptChance + 0.2),
+        hitstopMs: Math.max(profile.impact.hitstopMs, COMBAT_TUNING.fool.impactFrameMs)
+      };
+      guardEmpowerment = "fool";
+      this.clearFoolState();
+      this.pushFeedback("Fool punish committed", 0xf4d77f);
+    } else if (this.dayStrikeRemaining > 0) {
+      profile.damage = Math.round(profile.damage * COMBAT_TUNING.guardExit.dayDamageMultiplier);
+      guardEmpowerment = "day";
+      this.dayStrikeRemaining = 0;
+      this.pushFeedback("Day strike", 0xe9ab72);
+    } else if (this.oxStrikeRemaining > 0) {
+      profile.damage = Math.round(profile.damage * COMBAT_TUNING.guardExit.oxDamageMultiplier);
+      profile.range = Math.round(profile.range * COMBAT_TUNING.guardExit.oxRangeMultiplier);
+      rangeAnchor = Math.round((rangeAnchor ?? profile.range) * COMBAT_TUNING.guardExit.oxRangeMultiplier);
+      guardEmpowerment = "ox";
+      this.oxStrikeRemaining = 0;
+      this.pushFeedback(profile.shape === "thrust" ? "Ox line — armor pressure" : "Ox line extended", 0xa7cae0);
+    }
+
     return {
       ...signal,
+      rangeAnchor,
+      guardEmpowerment,
       profile
     };
   }
@@ -1724,6 +1800,11 @@ export class GameScene extends Phaser.Scene {
 
   private openEnemyAttackWindow(signal: AttackExecutionSignal): void {
     this.closeEnemyAttackWindow();
+
+    const status = this.controller.getStatus();
+    if (status.isGuarding && status.guardType === "fool") {
+      this.armFoolBait(signal);
+    }
 
     if (signal.profile.delivery === "ranged") {
       this.spawnAttackFlash(this.enemy.x, this.enemy.y, signal, true);
@@ -1906,10 +1987,220 @@ export class GameScene extends Phaser.Scene {
   }
 
   private closeEnemyAttackWindow(): void {
+    if (this.foolState === "baited" && this.foolBaitAttackId === this.enemyActiveAttack?.id) {
+      this.clearFoolState();
+    }
     this.enemyActiveAttack = null;
     this.enemyAttackResolved = false;
     this.enemyAttackVisual?.destroy();
     this.enemyAttackVisual = null;
+  }
+
+  private beginBindDecision(context: BindDecisionContext): void {
+    if (this.pendingBindDecision || this.combatLocked) {
+      return;
+    }
+
+    this.pendingBindDecision = context;
+    this.controller.resolveParrySuccess();
+    this.enemy.stun(context.perfect ? COMBAT_TUNING.bind.perfectInitialStunMs : COMBAT_TUNING.bind.initialStunMs);
+    this.spawnParryFx(this.player.x, this.player.y, context.contactX, context.contactY);
+    this.cameras.main.shake(72, context.perfect ? 0.0034 : 0.0027);
+    this.applyHitStop(context.perfect ? 28 : 20);
+    this.pushFeedback(
+      context.perfect ? "Perfect bind — choose follow-up" : "Bind — LMB standard · Q defensive · RMB offensive",
+      COLORS.gold
+    );
+
+    if (context.foolBaited) {
+      this.foolState = "punishReady";
+      this.foolStateRemaining = COMBAT_TUNING.fool.punishWindowMs;
+      this.foolBaitAttackId = null;
+      this.pushFeedback("Fool punish ready", 0xf3ca77);
+    }
+  }
+
+  private resolveBindDecision(type: BindFollowupType): void {
+    const context = this.pendingBindDecision;
+    this.pendingBindDecision = null;
+
+    if (!context || !this.enemy.alive) {
+      return;
+    }
+
+    let resolvedType = type;
+    if (type === "offensive" && !this.controller.trySpendStamina(COMBAT_TUNING.bind.offensiveStaminaCost)) {
+      resolvedType = "standard";
+      this.pushFeedback("Not enough stamina — Standard Bind", COLORS.danger);
+    }
+
+    const plowMultiplier = this.plowBindImpactRemaining > 0 ? COMBAT_TUNING.guardExit.plowBindImpactMultiplier : 1;
+    this.plowBindImpactRemaining = 0;
+    const techniqueMultiplier = this.currentStats.sword.techniques.bindImpactMultiplier ?? 1;
+    const bindMultiplier = plowMultiplier * techniqueMultiplier;
+    const baseDamage = Math.max(1, Math.round(context.signal.profile.damage * this.currentStats.parryReflectRatio));
+    const baseImpact = this.createBaseBindImpact(context, bindMultiplier);
+    let damage = baseDamage;
+    let stunMs = this.currentStats.parryStunMs + (context.perfect ? 60 : 0) + (context.beastBind ? 70 : 0);
+    let impact = baseImpact;
+    let label = context.perfect ? "Perfect Standard Bind" : "Standard Bind";
+    let color: number = COLORS.gold;
+
+    if (resolvedType === "defensive") {
+      damage = context.source === "projectile"
+        ? Math.max(1, Math.round(baseDamage * COMBAT_TUNING.bind.defensiveProjectileDamageMultiplier))
+        : Math.max(1, Math.round(baseDamage * COMBAT_TUNING.bind.defensiveDamageMultiplier));
+      const outcomeMultiplier = context.perfect
+        ? COMBAT_TUNING.bind.defensivePerfectImpactMultiplier
+        : COMBAT_TUNING.bind.defensiveImpactMultiplier;
+      impact = {
+        ...baseImpact,
+        displacement: Math.round(baseImpact.displacement * outcomeMultiplier),
+        controlLossMs: Math.round(baseImpact.controlLossMs * outcomeMultiplier),
+        interruptChance: Math.min(0.98, baseImpact.interruptChance + 0.22),
+        hitstopMs: context.perfect ? 42 : 34
+      };
+      stunMs = COMBAT_TUNING.bind.defensiveStunMs + (context.perfect ? COMBAT_TUNING.bind.perfectStunBonusMs : 0);
+      label = context.perfect ? "Perfect Defensive Bind" : "Defensive Bind";
+      color = 0x8dc3df;
+    } else if (resolvedType === "offensive") {
+      const outcomeMultiplier = context.perfect
+        ? COMBAT_TUNING.bind.offensivePerfectImpactMultiplier
+        : COMBAT_TUNING.bind.offensiveImpactMultiplier;
+      damage = Math.max(1, Math.round(baseDamage * COMBAT_TUNING.bind.offensiveDamageMultiplier));
+      impact = {
+        ...baseImpact,
+        displacement: Math.round(baseImpact.displacement * outcomeMultiplier),
+        controlLossMs: Math.round(baseImpact.controlLossMs * outcomeMultiplier),
+        interruptChance: 0.98,
+        hitstopMs: context.perfect ? 52 : 42
+      };
+      stunMs = COMBAT_TUNING.bind.offensiveStunMs + (context.perfect ? COMBAT_TUNING.bind.perfectStunBonusMs : 0);
+      this.enemy.breakGuard(stunMs);
+      label = context.perfect ? "Perfect Offensive Bind" : "Offensive Bind";
+      color = 0xe89b73;
+    }
+
+    const direction = { x: -context.signal.direction.x, y: -context.signal.direction.y };
+    const didKill = this.enemy.takeDamage(damage, direction, impact);
+    if (!didKill) {
+      this.enemy.stun(stunMs);
+      this.applyBindRewards(context.perfect);
+    }
+
+    this.spawnBindOutcomeFx(context, resolvedType, impact, color);
+    this.cameras.main.shake(96, resolvedType === "offensive" ? 0.0044 : resolvedType === "defensive" ? 0.0036 : 0.0032);
+    this.applyHitStop(impact.hitstopMs);
+    this.pushFeedback(plowMultiplier > 1 ? `${label} — Plow reinforced` : label, color);
+
+    if (didKill) {
+      this.onEnemyDefeated();
+    }
+  }
+
+  private createBaseBindImpact(context: BindDecisionContext, bindMultiplier: number): HitImpactProfile {
+    const baseDisplacementScale = context.beastBind
+      ? context.perfect ? 1.28 : 1.1
+      : context.perfect ? 0.82 : context.source === "projectile" ? 0.64 : 0.7;
+    const baseControlScale = context.beastBind
+      ? context.perfect ? 1.32 : 1.08
+      : context.perfect ? 1.06 : context.source === "projectile" ? 0.9 : 0.84;
+    return {
+      ...context.signal.profile.impact,
+      displacement: Math.round(context.signal.profile.impact.displacement * baseDisplacementScale * bindMultiplier),
+      controlLossMs: Math.round(context.signal.profile.impact.controlLossMs * baseControlScale * bindMultiplier),
+      interruptChance: Math.min(0.98, context.signal.profile.impact.interruptChance + (context.perfect ? 0.18 : 0.08)),
+      hitstopMs: context.perfect ? 42 : 32
+    };
+  }
+
+  private tryBlockIncoming(signal: AttackExecutionSignal, contactX: number, contactY: number, projectile: boolean): boolean {
+    const blockCost =
+      COMBAT_TUNING.guard.blockBaseCost +
+      signal.profile.damage * COMBAT_TUNING.guard.blockDamageFactor +
+      signal.profile.impact.displacement * COMBAT_TUNING.guard.blockDisplacementFactor +
+      (signal.kind === "heavy" ? COMBAT_TUNING.guard.heavyBlockBonus : 0) +
+      (signal.profile.attackClass === "cleave" ? COMBAT_TUNING.guard.cleaveBlockBonus : 0) +
+      (signal.fullyCharged ? COMBAT_TUNING.guard.chargedBlockBonus : 0);
+
+    if (!this.controller.absorbGuardImpact(blockCost)) {
+      return false;
+    }
+
+    this.spawnGuardBlockFx(contactX, contactY, projectile);
+    this.applyHitStop(projectile ? 14 : 20);
+    if (this.controller.getStatus().guardBreakRemaining > 0) {
+      this.pushFeedback("Guard Break", COLORS.danger);
+    } else {
+      this.pushFeedback("Guard held", 0x9ac6d9);
+    }
+    return true;
+  }
+
+  private applyGuardExitBenefit(type: GuardType): void {
+    if (this.combatLocked) {
+      return;
+    }
+
+    if (type === "plow") {
+      this.plowBindImpactRemaining = COMBAT_TUNING.guardExit.plowBindWindowMs;
+      this.pushFeedback("Plow set — next bind reinforced", 0x94b8c6);
+    } else if (type === "day") {
+      this.oxStrikeRemaining = 0;
+      this.dayStrikeRemaining = COMBAT_TUNING.guardExit.dayStrikeWindowMs;
+      this.pushFeedback("Day set — next strike empowered", 0xe8aa73);
+    } else if (type === "ox") {
+      this.dayStrikeRemaining = 0;
+      this.oxStrikeRemaining = COMBAT_TUNING.guardExit.oxStrikeWindowMs;
+      this.pushFeedback("Ox set — next line extended", 0xa8c9e0);
+    }
+  }
+
+  private handleGuardBreak(): void {
+    this.clearFoolState();
+    this.pendingBindDecision = null;
+    this.player.body.setVelocity(0, 0);
+    this.player.setScale(1.12, 0.88);
+    this.tweens.add({ targets: this.player, scaleX: 1, scaleY: 1, duration: 170, ease: "Back.out" });
+    this.cameras.main.shake(120, 0.0052);
+    this.pushFeedback("Guard Break", COLORS.danger);
+  }
+
+  private updateCombatPolishStates(delta: number): void {
+    this.plowBindImpactRemaining = Math.max(0, this.plowBindImpactRemaining - delta);
+    this.dayStrikeRemaining = Math.max(0, this.dayStrikeRemaining - delta);
+    this.oxStrikeRemaining = Math.max(0, this.oxStrikeRemaining - delta);
+    this.foolStateRemaining = Math.max(0, this.foolStateRemaining - delta);
+    if (this.foolState !== "idle" && this.foolStateRemaining === 0) {
+      this.clearFoolState();
+    }
+  }
+
+  private armFoolBait(signal: AttackExecutionSignal): void {
+    if (this.foolState !== "idle") {
+      return;
+    }
+
+    this.foolState = "baited";
+    this.foolStateRemaining = COMBAT_TUNING.fool.baitWindowMs;
+    this.foolBaitAttackId = signal.id;
+    this.pushFeedback("Fool bait armed", 0xe5b86c);
+  }
+
+  private consumeFoolBaitForSignal(signal: AttackExecutionSignal): boolean {
+    const matches = this.foolState === "baited" && this.foolBaitAttackId === signal.id && this.foolStateRemaining > 0;
+    if (matches) {
+      this.foolState = "idle";
+      this.foolStateRemaining = 0;
+      this.foolBaitAttackId = null;
+    }
+    return matches;
+  }
+
+  private clearFoolState(): void {
+    this.foolState = "idle";
+    this.foolStateRemaining = 0;
+    this.foolBaitAttackId = null;
   }
 
   private launchEnemyProjectile(signal: AttackExecutionSignal): void {
@@ -1984,43 +2275,25 @@ export class GameScene extends Phaser.Scene {
 
       const playerStatus = this.controller.getStatus();
 
-      if (playerStatus.isParrying) {
-        const perfectBind = this.isPerfectBind(playerStatus);
-        const bindImpactMultiplier = this.currentStats.sword.techniques.bindImpactMultiplier ?? 1;
-        const reflectedDamage = Math.max(1, Math.round(projectile.signal.profile.damage * this.currentStats.parryReflectRatio));
-        const reflectedDirection = {
-          x: -projectile.signal.direction.x,
-          y: -projectile.signal.direction.y
-        };
-        const reflectedImpact = {
-          ...projectile.signal.profile.impact,
-          displacement: Math.round(projectile.signal.profile.impact.displacement * (perfectBind ? 0.78 : 0.64) * bindImpactMultiplier),
-          controlLossMs: Math.round(projectile.signal.profile.impact.controlLossMs * (perfectBind ? 1.08 : 0.9) * bindImpactMultiplier),
-          interruptChance: Math.min(0.98, projectile.signal.profile.impact.interruptChance + (perfectBind ? 0.22 : 0.12)),
-          hitstopMs: perfectBind ? 40 : 28
-        };
-
-        this.controller.resolveParrySuccess();
+      if (playerStatus.isGuarding && this.tryBlockIncoming(projectile.signal, projectile.x, projectile.y, true)) {
         projectile.visual.destroy();
         this.enemyProjectiles.splice(index, 1);
+        continue;
+      }
 
-        const didKill = this.enemy.takeDamage(reflectedDamage, reflectedDirection, reflectedImpact);
-
-        if (!didKill) {
-          this.enemy.stun(this.currentStats.parryStunMs + (perfectBind ? 72 : 24));
-          this.applyBindRewards(perfectBind);
-        }
-
-        this.spawnParryFx(this.player.x, this.player.y, projectile.x, projectile.y);
-        this.cameras.main.shake(86, perfectBind ? 0.0036 : 0.003);
-        this.applyHitStop(perfectBind ? 40 : 28);
-        this.pushFeedback(perfectBind ? "Perfect bind" : "Shot turned aside", COLORS.gold);
-
-        if (didKill) {
-          this.onEnemyDefeated();
-          return;
-        }
-
+      if (playerStatus.isParrying) {
+        const perfectBind = this.isPerfectBind(playerStatus);
+        projectile.visual.destroy();
+        this.enemyProjectiles.splice(index, 1);
+        this.beginBindDecision({
+          source: "projectile",
+          signal: projectile.signal,
+          perfect: perfectBind,
+          contactX: projectile.x,
+          contactY: projectile.y,
+          beastBind: false,
+          foolBaited: this.consumeFoolBaitForSignal(projectile.signal)
+        });
         continue;
       }
 
@@ -2191,6 +2464,9 @@ export class GameScene extends Phaser.Scene {
       this.spawnImpactFx(this.enemy.x, this.enemy.y, this.activeAttack.profile.tint, this.activeAttack.direction, resolvedHit.impact);
       this.cameras.main.shake(70, resolvedHit.impact.cameraShake);
       this.applyHitStop(resolvedHit.impact.hitstopMs);
+      if (this.activeAttack.guardEmpowerment === "fool") {
+        this.playFoolPunishImpactFrame();
+      }
       this.pushFeedback(resolvedHit.cause, resolvedHit.feedbackColor);
       this.onPlayerHitResolved(this.activeAttack, resolvedHit);
 
@@ -2224,49 +2500,27 @@ export class GameScene extends Phaser.Scene {
     if (this.targetInsideAttack(this.enemy.x, this.enemy.y, this.player.x, this.player.y, this.enemyActiveAttack, 18)) {
       const playerStatus = this.controller.getStatus();
 
+      if (playerStatus.isGuarding && this.tryBlockIncoming(this.enemyActiveAttack, this.enemy.x, this.enemy.y, false)) {
+        this.closeEnemyAttackWindow();
+        return;
+      }
+
       if (playerStatus.isParrying) {
+        const signal = this.enemyActiveAttack;
         const perfectBind = this.isPerfectBind(playerStatus);
         const enemyDefinition = getEnemyDefinition(this.currentEncounter.enemyId);
         const beastBind = enemyDefinition.visualStyle === "beast";
-        const bindImpactMultiplier = this.currentStats.sword.techniques.bindImpactMultiplier ?? 1;
-        const reflectedDamage = Math.max(1, Math.round(this.enemyActiveAttack.profile.damage * this.currentStats.parryReflectRatio));
-        const reflectedDirection = {
-          x: -this.enemyActiveAttack.direction.x,
-          y: -this.enemyActiveAttack.direction.y
-        };
-        const reflectedImpact = {
-          ...this.enemyActiveAttack.profile.impact,
-          displacement: Math.round(
-            this.enemyActiveAttack.profile.impact.displacement *
-              (beastBind ? (perfectBind ? 1.28 : 1.1) : perfectBind ? 0.82 : 0.7) * bindImpactMultiplier
-          ),
-          controlLossMs: Math.round(
-            this.enemyActiveAttack.profile.impact.controlLossMs *
-              (beastBind ? (perfectBind ? 1.32 : 1.08) : perfectBind ? 1.06 : 0.84) * bindImpactMultiplier
-          ),
-          interruptChance: Math.min(0.98, this.enemyActiveAttack.profile.impact.interruptChance + (perfectBind ? 0.18 : 0.08)),
-          hitstopMs: perfectBind ? 42 : 32
-        };
-
-        this.controller.resolveParrySuccess();
+        const foolBaited = this.consumeFoolBaitForSignal(signal);
         this.closeEnemyAttackWindow();
-
-        const didKill = this.enemy.takeDamage(reflectedDamage, reflectedDirection, reflectedImpact);
-
-        if (!didKill) {
-          this.enemy.stun(this.currentStats.parryStunMs + (perfectBind ? 60 : 0) + (beastBind ? 70 : 0));
-          this.applyBindRewards(perfectBind);
-        }
-
-        this.spawnParryFx(this.player.x, this.player.y, this.enemy.x, this.enemy.y);
-        this.cameras.main.shake(90, 0.0034);
-        this.applyHitStop(perfectBind ? 42 : 30);
-        this.pushFeedback(perfectBind ? "Perfect bind" : "Bind won", COLORS.gold);
-
-        if (didKill) {
-          this.onEnemyDefeated();
-        }
-
+        this.beginBindDecision({
+          source: "melee",
+          signal,
+          perfect: perfectBind,
+          contactX: this.enemy.x,
+          contactY: this.enemy.y,
+          beastBind,
+          foolBaited
+        });
         return;
       }
 
@@ -2728,6 +2982,14 @@ export class GameScene extends Phaser.Scene {
       scale = Phaser.Math.Linear(scale, 1, heavyPierceRatio);
     }
 
+    if (signal.guardEmpowerment === "ox" && thrust) {
+      scale = Phaser.Math.Linear(
+        scale,
+        armor === "heavy" ? 1.14 : 1.08,
+        COMBAT_TUNING.guardExit.oxArmorPierceBonus
+      );
+    }
+
     if (bossEncounter && thrust) {
       const bossThrustFloor = armor === "heavy" ? (signal.kind === "heavy" || lunge ? 1.08 : 0.98) : armor === "light" ? 1.08 : 1.02;
       scale = Math.max(scale, bossThrustFloor);
@@ -2889,6 +3151,35 @@ export class GameScene extends Phaser.Scene {
       widthScale *= 1.08;
       lengthScale *= 1.05;
       alpha = 0.9 + (shimmer + 1) * 0.04;
+    }
+
+    if (status.isGuarding) {
+      switch (status.guardType) {
+        case "day":
+          forward += 6;
+          side -= 7;
+          rotation -= 0.34;
+          lengthScale *= 1.1;
+          break;
+        case "ox":
+          forward += 10;
+          side += 4;
+          rotation += 0.13;
+          lengthScale *= 1.12;
+          break;
+        case "fool":
+          forward -= 9;
+          side += 9;
+          rotation += 0.5;
+          lengthScale *= 0.94;
+          alpha = 0.82;
+          break;
+        default:
+          forward -= 3;
+          side += 7;
+          rotation += 0.22;
+          widthScale *= 1.08;
+      }
     }
 
     if (!signal || !phase) {
@@ -3087,6 +3378,35 @@ export class GameScene extends Phaser.Scene {
         };
   }
 
+  private getGuardPoseTarget(type: GuardType): {
+    forward: number;
+    side: number;
+    rotation: number;
+    lengthScale: number;
+    heightScale: number;
+    bodyTilt: number;
+  } {
+    switch (type) {
+      case "day":
+        return { forward: 12, side: -10, rotation: -0.42, lengthScale: 1.12, heightScale: 1.04, bodyTilt: -0.06 };
+      case "ox":
+        return { forward: 17, side: 4, rotation: 0.14, lengthScale: 1.14, heightScale: 1.02, bodyTilt: 0.035 };
+      case "fool":
+        return { forward: -10, side: 14, rotation: 0.58, lengthScale: 0.92, heightScale: 0.94, bodyTilt: 0.08 };
+      default:
+        return { forward: -2, side: 10, rotation: 0.26, lengthScale: 1.07, heightScale: 1.03, bodyTilt: 0.025 };
+    }
+  }
+
+  private getGuardAccent(type: GuardType | null): number {
+    switch (type) {
+      case "day": return 0xe6a56e;
+      case "ox": return 0x93c5dd;
+      case "fool": return 0xd58a72;
+      default: return 0x9ebbc6;
+    }
+  }
+
   private spawnAttackFlash(ownerX: number, ownerY: number, signal: AttackExecutionSignal, enemyOwned: boolean): void {
     const center =
       signal.profile.delivery === "ranged"
@@ -3141,7 +3461,9 @@ export class GameScene extends Phaser.Scene {
     const reach = style.guardSize * 0.34 + 6;
     const commitWeight = this.activeAttack?.profile.commitWeight ?? this.controller.getCurrentAttackSignal()?.profile.commitWeight ?? 0;
     const attackSignal = this.activeAttack ?? this.controller.getCurrentAttackSignal();
-    const poseTarget = this.getPlayerAttackPoseTarget(attackSignal, this.controller.getCurrentAttackPhase());
+    const poseTarget = status.isGuarding && status.guardType
+      ? this.getGuardPoseTarget(status.guardType)
+      : this.getPlayerAttackPoseTarget(attackSignal, this.controller.getCurrentAttackPhase());
     const perpendicular = new Phaser.Math.Vector2(-facing.y, facing.x);
     const largeWarBlade = this.isLargeWarBladeStyle();
 
@@ -3154,13 +3476,17 @@ export class GameScene extends Phaser.Scene {
 
     const bladeScale = status.isParrying
       ? 1.08
-      : status.isAttacking
+      : status.isGuarding
+        ? status.guardType === "fool" ? 0.94 : 1.1
+        : status.isAttacking
         ? (largeWarBlade ? 1.02 + commitWeight * 0.22 : 1.04 + commitWeight * 0.32)
         : 1;
     const bodyScaleX =
       (status.isParrying
         ? 0.98
-        : status.isDashing
+        : status.isGuarding
+          ? status.guardType === "fool" ? 0.94 : 1.03
+          : status.isDashing
           ? 1.08
           : status.isAttacking
             ? (largeWarBlade ? 1 + commitWeight * 0.05 : 1.01 + commitWeight * 0.08)
@@ -3169,17 +3495,21 @@ export class GameScene extends Phaser.Scene {
     const bodyScaleY =
       (status.isParrying
         ? 1.04
-        : status.isDashing
+        : status.isGuarding
+          ? status.guardType === "fool" ? 0.94 : 1.06
+          : status.isDashing
           ? (largeWarBlade ? 0.94 : 0.9)
           : status.isAttacking
             ? (largeWarBlade ? 1 + commitWeight * 0.03 : 1 + commitWeight * 0.06)
             : 1) -
       Math.abs(this.playerBodyTilt) * 0.04;
-    const guardTint = status.isParrying ? COLORS.gold : style.accent;
-    const bladeTint = status.isParrying ? 0xf4e3b6 : this.activeAttack?.profile.tint ?? COLORS.ghost;
+    const guardTint = status.isParrying ? COLORS.gold : status.isGuarding ? this.getGuardAccent(status.guardType) : style.accent;
+    const bladeTint = status.isParrying ? 0xf4e3b6 : status.isGuarding ? this.getGuardAccent(status.guardType) : this.activeAttack?.profile.tint ?? COLORS.ghost;
     const bodyTint = status.isParrying
       ? 0xd8b875
-      : this.playerInvulnRemaining > 0 && Math.floor(this.playerInvulnRemaining / 45) % 2 === 0
+      : status.isGuarding
+        ? status.guardType === "fool" ? 0xb87767 : 0xaec0c7
+        : this.playerInvulnRemaining > 0 && Math.floor(this.playerInvulnRemaining / 45) % 2 === 0
         ? 0xf0b4ab
         : this.currentStats.sword.accent;
     const guardX =
@@ -3197,7 +3527,7 @@ export class GameScene extends Phaser.Scene {
     // Keep the Arcade body at its original gameplay dimensions while enlarging only the presentation.
     this.player.body.setSize(this.playerCollisionWidth / playerVisualScaleX, this.playerCollisionHeight / playerVisualScaleY, true);
     this.player.setRotation(this.playerBodyTilt);
-    this.player.setStrokeStyle(2, status.isParrying ? COLORS.gold : COLORS.ghost, status.isParrying ? 0.74 : 0.4);
+    this.player.setStrokeStyle(2, status.isParrying ? COLORS.gold : status.isGuarding ? this.getGuardAccent(status.guardType) : COLORS.ghost, status.isParrying || status.isGuarding ? 0.74 : 0.4);
 
     if (this.playerWeaponSprite) {
       const rapierBaseScale = this.getRapierSpriteBaseScale();
@@ -3216,8 +3546,8 @@ export class GameScene extends Phaser.Scene {
       );
       this.playerWeaponSprite.setAlpha(rapierPose.alpha);
 
-      if (status.isParrying) {
-        this.playerWeaponSprite.setTint(COLORS.gold);
+      if (status.isParrying || status.isGuarding) {
+        this.playerWeaponSprite.setTint(status.isParrying ? COLORS.gold : this.getGuardAccent(status.guardType));
       } else {
         this.playerWeaponSprite.clearTint();
       }
@@ -3270,6 +3600,11 @@ export class GameScene extends Phaser.Scene {
     this.nextAttackBonusDamage = 0;
     this.postBindThrustCharges = 0;
     this.thrustStreak = 0;
+    this.pendingBindDecision = null;
+    this.plowBindImpactRemaining = 0;
+    this.dayStrikeRemaining = 0;
+    this.oxStrikeRemaining = 0;
+    this.clearFoolState();
     this.resetCombo();
     this.player.body.setVelocity(
       direction.x * impact.displacement * (tradingHeavy ? 0.3 : 0.82),
@@ -3357,6 +3692,8 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    this.pendingBindDecision = null;
+    this.clearFoolState();
     this.dropsSpawned = true;
     this.closeEnemyAttackWindow();
     this.clearEnemyProjectiles();
@@ -3652,6 +3989,39 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private spawnGuardBlockFx(contactX: number, contactY: number, projectile: boolean): void {
+    const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, contactX, contactY);
+    const plate = this.add.rectangle(this.player.x, this.player.y, projectile ? 80 : 102, 13, 0x9fc7d6, 0.42).setRotation(angle).setDepth(10);
+    const ring = this.add.circle(this.player.x, this.player.y, projectile ? 18 : 24, 0x7fb1c6, 0.18).setDepth(9);
+    this.tweens.add({ targets: plate, scaleX: projectile ? 1.24 : 1.38, alpha: 0, duration: projectile ? 110 : 140, ease: "Quad.out", onComplete: () => plate.destroy() });
+    this.tweens.add({ targets: ring, scale: projectile ? 2.1 : 2.6, alpha: 0, duration: 150, ease: "Sine.out", onComplete: () => ring.destroy() });
+  }
+
+  private spawnBindOutcomeFx(
+    context: BindDecisionContext,
+    type: BindFollowupType,
+    impact: HitImpactProfile,
+    color: number
+  ): void {
+    const direction = new Phaser.Math.Vector2(-context.signal.direction.x, -context.signal.direction.y);
+    const x = context.contactX;
+    const y = context.contactY;
+    const width = type === "offensive" ? 132 : type === "defensive" ? 114 : 90;
+    const flash = this.add.rectangle(x, y, width, type === "offensive" ? 28 : 16, color, 0.5).setRotation(direction.angle()).setDepth(11);
+    const ring = this.add.circle(x, y, type === "offensive" ? 28 : 22, color, 0.18).setDepth(10);
+    this.tweens.add({ targets: flash, x: x + direction.x * (type === "defensive" ? 42 : 20), y: y + direction.y * (type === "defensive" ? 42 : 20), scaleX: type === "offensive" ? 1.38 : 1.2, alpha: 0, duration: type === "offensive" ? 170 : 140, ease: "Cubic.out", onComplete: () => flash.destroy() });
+    this.tweens.add({ targets: ring, scale: type === "offensive" ? 3.1 : 2.4, alpha: 0, duration: Math.max(120, impact.hitstopMs * 4), onComplete: () => ring.destroy() });
+  }
+
+  private playFoolPunishImpactFrame(): void {
+    const flash = this.add.rectangle(VIEWPORT.width * 0.5, VIEWPORT.height * 0.5, VIEWPORT.width, VIEWPORT.height, 0xffe4a4, 0.11).setScrollFactor(0).setDepth(30);
+    this.tweens.add({ targets: flash, alpha: 0, duration: 95, ease: "Quad.out", onComplete: () => flash.destroy() });
+    this.enemy.bodyObject.setScale(1.16, 0.84);
+    this.tweens.add({ targets: this.enemy.bodyObject, scaleX: 1, scaleY: 1, duration: 130, ease: "Back.out" });
+    this.cameras.main.shake(105, 0.0062);
+    this.applyHitStop(COMBAT_TUNING.fool.impactFrameMs);
+  }
+
   private playDashEffect(direction: { x: number; y: number }): void {
     const style = this.currentStats.combatStyle;
     const streak = this.add
@@ -3691,6 +4061,23 @@ export class GameScene extends Phaser.Scene {
       : null;
     const judgmentText = this.judgmentActive ? `  Judgment ${this.judgmentStacks}/5` : "";
     const staminaText = `${Math.round(status.stamina)}/${Math.round(status.staminaMax)}`;
+    const guardName = status.guardType ? `${status.guardType[0].toUpperCase()}${status.guardType.slice(1)}` : "Plow";
+    const guardText = status.isGuarding
+      ? `Guard ${guardName}`
+      : status.guardBreakRemaining > 0
+        ? "Guard BROKEN"
+        : this.plowBindImpactRemaining > 0
+          ? "Plow bind ready"
+          : this.dayStrikeRemaining > 0
+            ? "Day strike ready"
+            : this.oxStrikeRemaining > 0
+              ? "Ox line ready"
+              : this.foolState === "baited"
+                ? "Fool bait"
+                : this.foolState === "punishReady"
+                  ? "Fool punish"
+                  : "Guard ready";
+    const bindDecisionText = status.isBindDecisionActive ? "  Bind: LMB Standard · Q Defensive · RMB Offensive" : "";
     const comboMode = this.getCurrentComboMode();
     const modifierLabel = this.getTrainingHudLabel();
     this.refreshBossHud();
@@ -3700,7 +4087,8 @@ export class GameScene extends Phaser.Scene {
         this.currentStats.sword.name,
         `HP ${this.playerHp}/${this.playerMaxHp}  Stamina ${staminaText}`,
         `Chain ${comboLabel}  ${this.formatInventoryInline(state.materials)}`,
-        `Dash ${dashText}  Bind ${bindReady}${abilityText ? `  F ${abilityText}` : ""}${judgmentText}`
+        `Dash ${dashText}  Bind ${bindReady}${abilityText ? `  F ${abilityText}` : ""}${judgmentText}`,
+        `${guardText}${bindDecisionText}`
       ].join("\n")
     );
 

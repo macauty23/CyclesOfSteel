@@ -223,7 +223,7 @@ export class PlaceholderEnemy {
   update(
     targetX: number,
     targetY: number,
-    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean },
+    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean; isFooling?: boolean },
     deltaMs: number
   ): EnemyUpdateResult {
     if (!this.alive) {
@@ -233,7 +233,10 @@ export class PlaceholderEnemy {
     const stunnedBeforeUpdate = this.stunRemaining > 0;
     const slowedBeforeUpdate = this.slowRemaining > 0;
 
-    this.attackCooldownRemaining = Math.max(0, this.attackCooldownRemaining - deltaMs);
+    const foolPressureMultiplier = targetState.isFooling
+      ? this.pattern === "crusher" ? 1.7 : this.pattern === "orbiter" ? 1.5 : 1.35
+      : 1;
+    this.attackCooldownRemaining = Math.max(0, this.attackCooldownRemaining - deltaMs * foolPressureMultiplier);
     this.chainGapRemaining = Math.max(0, this.chainGapRemaining - deltaMs);
     this.specialCooldownRemaining = Math.max(0, this.specialCooldownRemaining - deltaMs);
     this.stunRemaining = Math.max(0, this.stunRemaining - deltaMs);
@@ -245,6 +248,10 @@ export class PlaceholderEnemy {
     this.bleedRemaining = Math.max(0, this.bleedRemaining - deltaMs);
     this.bleedTickRemaining = Math.max(0, this.bleedTickRemaining - deltaMs);
     this.strafeTimer -= deltaMs;
+
+    if (targetState.isFooling) {
+      this.hesitationRemaining = Math.min(this.hesitationRemaining, 36);
+    }
 
     if (this.bleedRemaining > 0 && this.bleedTickRemaining === 0) {
       this.bleedTickRemaining = 420;
@@ -410,6 +417,17 @@ export class PlaceholderEnemy {
       repeat: 1
     });
     this.syncPresentation(false, null, true);
+  }
+
+  /** Offensive binds use this to collapse the brief AI guard state before applying their stun. */
+  breakGuard(stunMs: number): void {
+    if (!this.alive) {
+      return;
+    }
+
+    this.guardRemaining = 0;
+    this.falterRemaining = Math.max(this.falterRemaining, Math.round(stunMs * 0.42));
+    this.stun(stunMs);
   }
 
   private createEnemyAttackProfile(base: AttackProfile, damageBonus: number, speedScale: number): AttackProfile {
@@ -737,7 +755,7 @@ export class PlaceholderEnemy {
   private updateMovement(
     distance: number,
     normalized: Phaser.Math.Vector2,
-    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean }
+    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean; isFooling?: boolean }
   ): void {
     if (this.currentAttack?.phase === "active") {
       this.bodyObject.body.setAcceleration(0, 0);
@@ -862,7 +880,7 @@ export class PlaceholderEnemy {
     );
   }
 
-  private shouldAttack(distance: number, targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean }): boolean {
+  private shouldAttack(distance: number, targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean; isFooling?: boolean }): boolean {
     const beast = this.definition.visualStyle === "beast";
     const guardian = this.definition.visualStyle === "guardian";
     const polearm = this.definition.visualStyle === "polearm";
@@ -871,6 +889,13 @@ export class PlaceholderEnemy {
 
     if (this.falterRemaining > 0 || this.hesitationRemaining > 0) {
       return false;
+    }
+
+    if (targetState.isFooling) {
+      const foolReach = this.pattern === "crusher" ? 1.16 : this.pattern === "orbiter" ? 1.08 : 1.02;
+      if (distance <= this.heavyAttack.range * foolReach && (this.heavyAttack.delivery === "ranged" || distance >= this.lightAttack.range * 0.34)) {
+        return true;
+      }
     }
 
     if (beast) {
@@ -930,7 +955,7 @@ export class PlaceholderEnemy {
 
   private prepareAttackSequence(
     distance: number,
-    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean }
+    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean; isFooling?: boolean }
   ): void {
     const close = distance <= this.lightAttack.range * 0.68;
     const sequence: AttackKind[] = [];
@@ -1110,7 +1135,7 @@ export class PlaceholderEnemy {
     normalized: Phaser.Math.Vector2,
     targetX: number,
     targetY: number,
-    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean }
+    targetState: { isAttacking: boolean; isDashing: boolean; isParrying: boolean; isFooling?: boolean }
   ): EnemyUpdateResult {
     if (this.specialCooldownRemaining > 0 || this.currentAttack || this.hesitationRemaining > 0 || this.falterRemaining > 0) {
       return {};

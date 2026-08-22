@@ -10,6 +10,7 @@ import {
 } from "../tutorial/tutorialData";
 import { createGuidedOverlay } from "../ui/createGuidedOverlay";
 import { createButton, type ButtonHandle } from "../ui/createButton";
+import { fadeInMajorScene } from "../ui/sceneFades";
 import { COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
 
 export class ForgeScene extends Phaser.Scene {
@@ -29,6 +30,7 @@ export class ForgeScene extends Phaser.Scene {
   }
 
   create(): void {
+    fadeInMajorScene(this);
     this.tabButtons.clear();
     this.modificationButton = null;
     this.immortalButton = null;

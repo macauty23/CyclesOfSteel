@@ -34,6 +34,7 @@ import {
   applyWeaponTechToStats
 } from "../data/weaponTechTree";
 import { TEST_MODE_PASSWORD, createTutorialChapter } from "../tutorial/tutorialData";
+import { fadeOutMajorScene, MAJOR_SCENE_FADE_MS } from "../ui/sceneFades";
 import { SCENE_KEYS, type SceneKey } from "./SceneKeys";
 import { clearActiveRun, hasClaimedExcalibur, loadActiveRun, loadBossClearFlags, markExcaliburClaimed, saveActiveRun, saveBossClearFlags } from "./SaveStorage";
 import type {
@@ -198,6 +199,7 @@ export class GameManager {
   private excaliburAscensionReady = false;
   private longswordBlessedFlawlessStreak = 0;
   private rareEventSpawnedThisRun = false;
+  private transitionQueued = false;
 
   constructor() {
     this.defeatedBossClearFlags = new Set(loadBossClearFlags());
@@ -1233,16 +1235,32 @@ export class GameManager {
   }
 
   private transition(scene: Phaser.Scene, sceneKey: SceneKey): void {
-    this.currentSceneKey = sceneKey;
-    this.saveRun();
-
-    if (!scene.scene.isActive(sceneKey)) {
-      scene.scene.start(sceneKey);
+    if (this.transitionQueued) {
       return;
     }
 
-    scene.scene.stop(sceneKey);
-    scene.scene.start(sceneKey);
+    this.transitionQueued = true;
+    this.currentSceneKey = sceneKey;
+    this.saveRun();
+
+    const completeTransition = () => {
+      this.transitionQueued = false;
+      if (!scene.scene.isActive(sceneKey)) {
+        scene.scene.start(sceneKey);
+        return;
+      }
+
+      scene.scene.stop(sceneKey);
+      scene.scene.start(sceneKey);
+    };
+
+    if (!scene.sys.isActive()) {
+      completeTransition();
+      return;
+    }
+
+    fadeOutMajorScene(scene);
+    scene.time.delayedCall(MAJOR_SCENE_FADE_MS, completeTransition);
   }
 
   private saveRun(): void {

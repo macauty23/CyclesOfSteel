@@ -6,6 +6,7 @@ import { MATERIAL_LABELS, formatMaterialCost, formatMaterialInventory, materialC
 import { getArenaEnvironmentDefinition } from "../data/arenaEnvironments";
 import { getBossDefinition } from "../data/bosses";
 import { getChallengeShrineDefinition } from "../data/challengeShrines";
+import { getEnemyDefinition } from "../data/enemies";
 import { RELICS } from "../data/relics";
 import { RUN_MODIFIERS } from "../data/runModifiers";
 import { getRunEventDefinition, type RunEventChoice } from "../data/runEvents";
@@ -14,17 +15,23 @@ import {
   TUTORIAL_WORLD_MAP_PAGES
 } from "../tutorial/tutorialData";
 import { createGuidedOverlay, type GuidedOverlayHandle } from "../ui/createGuidedOverlay";
-import { getBiomeBackgroundKey, preloadBiomeBackgrounds } from "../ui/biomeBackgrounds";
+import {
+  BIOME_BACKGROUND_KEYS,
+  getBiomeBackgroundConfig,
+  preloadBiomeBackgrounds,
+  type BiomeBackgroundConfig
+} from "../ui/biomeBackgrounds";
 import { createButton, type ButtonHandle } from "../ui/createButton";
+import { fadeInMajorScene } from "../ui/sceneFades";
 import { applyLocalizedText, localizeTextStyle } from "../ui/localization";
 import { COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
 
 interface NodeCardHandle {
   flare: Phaser.GameObjects.Ellipse;
+  backdrop: Phaser.GameObjects.Image;
   background: Phaser.GameObjects.Rectangle;
   title: Phaser.GameObjects.Text;
   subtitle: Phaser.GameObjects.Text;
-  tag: Phaser.GameObjects.Text;
 }
 
 interface MerchantOption {
@@ -34,11 +41,26 @@ interface MerchantOption {
   reward: MaterialCost;
 }
 
+interface BiomeBackgroundFrame {
+  image: Phaser.GameObjects.Image;
+  wash: Phaser.GameObjects.Image;
+  haze: Phaser.GameObjects.Image;
+  imageAlpha: number;
+  hazeAlpha: number;
+  washTextureKey: string;
+  hazeTextureKey: string;
+}
+
 export class WorldMapScene extends Phaser.Scene {
   private static readonly HUD_BOUNDS = new Phaser.Geom.Rectangle(32, 32, 340, 650);
+  private static readonly NODE_CARD_WIDTH = 100;
+  private static readonly NODE_CARD_HEIGHT = 58;
+  private static readonly NODE_BACKDROP_PADDING = 6;
+  private static readonly NODE_BACKDROP_TEXTURE_KEY = "world-map-node-card-backdrop";
   private static readonly MAP_CONTENT_X = 396;
   private static readonly MAP_CONTENT_WIDTH = VIEWPORT.width - WorldMapScene.MAP_CONTENT_X - 24;
-  private static readonly MAP_PANORAMA_HEIGHT = 194;
+  private static readonly MAP_ARTWORK_X = WorldMapScene.MAP_CONTENT_X;
+  private static readonly MAP_ARTWORK_WIDTH = WorldMapScene.MAP_CONTENT_WIDTH;
   private static readonly SPECIAL_REGION_IDS = new Set<RegionId>([
     "frostlands",
     "frozenPeaks",
@@ -76,8 +98,8 @@ export class WorldMapScene extends Phaser.Scene {
   private lastTestModeEnterNodeId = "";
   private lastTestModeEnterAt = -Infinity;
   private forcedTestNodeId: string | null = null;
-  private biomeBackdrop: Phaser.GameObjects.Image | null = null;
-  private biomeBackdropKey = "";
+  private biomeBackgroundFrame: BiomeBackgroundFrame | null = null;
+  private biomeBackgroundKey = "";
 
   constructor() {
     super(SCENE_KEYS.WorldMap);
@@ -88,6 +110,7 @@ export class WorldMapScene extends Phaser.Scene {
   }
 
   create(): void {
+    fadeInMajorScene(this);
     const available = gameManager.getAvailableWorldNodeDefinitions();
     const visibleNodes = gameManager.getCurrentChapterWorldNodeDefinitions();
     this.selectedNodeId = available[0]?.id ?? visibleNodes[0]?.id ?? "";
@@ -100,12 +123,12 @@ export class WorldMapScene extends Phaser.Scene {
     this.lastTestModeEnterNodeId = "";
     this.lastTestModeEnterAt = -Infinity;
     this.forcedTestNodeId = null;
-    this.biomeBackdrop = null;
-    this.biomeBackdropKey = "";
+    this.biomeBackgroundFrame = null;
+    this.biomeBackgroundKey = "";
     this.connectionGraphics = null;
 
-    this.updateBiomeBackdrop(gameManager.getWorldNodeDefinition(this.selectedNodeId)?.regionId ?? "plains", true);
-    this.createMapCanvas();
+    this.clearRetiredBiomeSliceTextures();
+    this.updateBiomeBackground(gameManager.getWorldNodeDefinition(this.selectedNodeId)?.regionId ?? "plains", true);
     this.dragBounds = this.paintBackdrop(visibleNodes);
     this.createDragSurface();
     this.drawConnections(visibleNodes);
@@ -126,61 +149,245 @@ export class WorldMapScene extends Phaser.Scene {
     return worldBounds;
   }
 
-  private createBiomeBackdrop(textureKey: string, alpha: number): Phaser.GameObjects.Image {
-    const backdrop = this.add.image(0, 0, textureKey);
-    const displayWidth = WorldMapScene.MAP_CONTENT_WIDTH;
-    const displayHeight = displayWidth * (backdrop.height / Math.max(1, backdrop.width));
+  private clearRetiredBiomeSliceTextures(): void {
+    for (const textureKey of Object.values(BIOME_BACKGROUND_KEYS)) {
+      for (const layerId of ["topSky", "bottomForeground", "leftDecoration", "rightDecoration"]) {
+        const retiredFrameKey = `world-map-frame-${textureKey}-${layerId}`;
 
-    return backdrop
-      .setPosition(WorldMapScene.MAP_CONTENT_X + displayWidth * 0.5, WorldMapScene.MAP_PANORAMA_HEIGHT * 0.54)
-      .setDisplaySize(displayWidth, displayHeight)
-      .setScrollFactor(0)
-      .setDepth(-10)
-      .setAlpha(alpha);
+        if (this.textures.exists(retiredFrameKey)) {
+          this.textures.remove(retiredFrameKey);
+        }
+      }
+
+      const retiredWashKey = `world-map-readability-wash-${textureKey}`;
+
+      if (this.textures.exists(retiredWashKey)) {
+        this.textures.remove(retiredWashKey);
+      }
+
+      const retiredHazeKey = `world-map-horizon-haze-${textureKey}`;
+
+      if (this.textures.exists(retiredHazeKey)) {
+        this.textures.remove(retiredHazeKey);
+      }
+    }
   }
 
-  private createMapCanvas(): void {
-    const graphics = this.add.graphics().setScrollFactor(0).setDepth(-8);
-    const x = WorldMapScene.MAP_CONTENT_X;
-    const width = WorldMapScene.MAP_CONTENT_WIDTH;
-    const panoramaHeight = WorldMapScene.MAP_PANORAMA_HEIGHT;
+  private createReadabilityWashTexture(config: BiomeBackgroundConfig): string {
+    const washTextureKey = `world-map-readability-wash-${config.textureKey}`;
 
-    graphics.fillStyle(0x10161f, 0.98);
-    graphics.fillRect(x, panoramaHeight + 42, width, VIEWPORT.height - panoramaHeight - 42);
-    graphics.fillGradientStyle(0x10161f, 0x10161f, 0x10161f, 0x10161f, 0.04, 0.04, 0.98, 0.98);
-    graphics.fillRect(x, panoramaHeight - 30, width, 76);
-    graphics.fillStyle(0x081018, 0.1);
-    graphics.fillRect(x, 0, width, panoramaHeight);
+    if (this.textures.exists(washTextureKey)) {
+      return washTextureKey;
+    }
+
+    const canvasTexture = this.textures.createCanvas(
+      washTextureKey,
+      WorldMapScene.MAP_ARTWORK_WIDTH,
+      VIEWPORT.height
+    );
+
+    if (!canvasTexture) {
+      throw new Error(`Unable to create World Map readability wash: ${washTextureKey}`);
+    }
+
+    const context = canvasTexture.context;
+    const width = WorldMapScene.MAP_ARTWORK_WIDTH;
+    const height = VIEWPORT.height;
+    const centerX = width * config.washCenterX;
+    const centerY = height * config.washCenterY;
+    const radiusX = width * config.washRadiusX;
+    const radiusY = height * config.washRadiusY;
+    const verticalScale = radiusY / radiusX;
+
+    context.save();
+    context.translate(centerX, centerY);
+    context.scale(1, verticalScale);
+    const gradient = context.createRadialGradient(0, 0, 0, 0, 0, radiusX);
+    gradient.addColorStop(0, `rgba(5, 12, 19, ${config.washCenterAlpha})`);
+    gradient.addColorStop(0.48, `rgba(5, 12, 19, ${config.washCenterAlpha * 0.82})`);
+    gradient.addColorStop(0.8, `rgba(5, 12, 19, ${Math.max(config.washEdgeAlpha, config.washCenterAlpha * 0.46)})`);
+    gradient.addColorStop(1, `rgba(5, 12, 19, ${config.washEdgeAlpha})`);
+    context.fillStyle = gradient;
+    context.fillRect(-centerX, -centerY / verticalScale, width, height / verticalScale);
+    context.restore();
+    canvasTexture.refresh();
+
+    return washTextureKey;
   }
 
-  private updateBiomeBackdrop(regionId: RegionId, immediate = false): void {
-    const textureKey = getBiomeBackgroundKey(regionId);
+  private createHorizonHazeTexture(config: BiomeBackgroundConfig): string {
+    const hazeTextureKey = `world-map-horizon-haze-${config.textureKey}`;
 
-    if (textureKey === this.biomeBackdropKey && this.biomeBackdrop) {
+    if (this.textures.exists(hazeTextureKey)) {
+      return hazeTextureKey;
+    }
+
+    const canvasTexture = this.textures.createCanvas(
+      hazeTextureKey,
+      WorldMapScene.MAP_ARTWORK_WIDTH,
+      VIEWPORT.height
+    );
+
+    if (!canvasTexture) {
+      throw new Error(`Unable to create World Map horizon haze: ${hazeTextureKey}`);
+    }
+
+    const context = canvasTexture.context;
+    const width = WorldMapScene.MAP_ARTWORK_WIDTH;
+    const height = VIEWPORT.height;
+    const hazeColor = Phaser.Display.Color.IntegerToColor(config.horizonHazeColor ?? 0xc7ddea);
+    const hazeHeight = height * (config.horizonHazeHeight ?? 0.18);
+    const centerY = height * (config.horizonY ?? 0.35);
+    const startY = Phaser.Math.Clamp(centerY - hazeHeight * 0.5, 0, height);
+    const endY = Phaser.Math.Clamp(centerY + hazeHeight * 0.5, 0, height);
+    const gradient = context.createLinearGradient(0, startY, 0, endY);
+    const rgba = (alpha: number): string => `rgba(${hazeColor.red}, ${hazeColor.green}, ${hazeColor.blue}, ${alpha})`;
+
+    gradient.addColorStop(0, rgba(0));
+    gradient.addColorStop(0.3, rgba(0.52));
+    gradient.addColorStop(0.5, rgba(1));
+    gradient.addColorStop(0.7, rgba(0.52));
+    gradient.addColorStop(1, rgba(0));
+    context.fillStyle = gradient;
+    context.fillRect(0, startY, width, endY - startY);
+    canvasTexture.refresh();
+
+    return hazeTextureKey;
+  }
+
+  private createNodeBackdropTexture(): string {
+    const textureKey = WorldMapScene.NODE_BACKDROP_TEXTURE_KEY;
+
+    if (this.textures.exists(textureKey)) {
+      return textureKey;
+    }
+
+    const padding = WorldMapScene.NODE_BACKDROP_PADDING;
+    const width = WorldMapScene.NODE_CARD_WIDTH + padding * 2;
+    const height = WorldMapScene.NODE_CARD_HEIGHT + padding * 2;
+    const canvasTexture = this.textures.createCanvas(textureKey, width, height);
+
+    if (!canvasTexture) {
+      throw new Error(`Unable to create World Map node backdrop: ${textureKey}`);
+    }
+
+    const context = canvasTexture.context;
+    context.clearRect(0, 0, width, height);
+    context.save();
+    context.fillStyle = "rgba(5, 12, 19, 0.92)";
+    context.shadowColor = "rgba(1, 5, 10, 0.95)";
+    context.shadowBlur = 8;
+    context.fillRect(padding, padding, WorldMapScene.NODE_CARD_WIDTH, WorldMapScene.NODE_CARD_HEIGHT);
+    context.restore();
+    canvasTexture.refresh();
+
+    return textureKey;
+  }
+
+  private createBiomeBackground(config: BiomeBackgroundConfig, alphaMultiplier: number): BiomeBackgroundFrame {
+    const source = this.textures.get(config.textureKey).getSourceImage();
+    const scale = Math.max(WorldMapScene.MAP_ARTWORK_WIDTH / source.width, VIEWPORT.height / source.height);
+    const displayWidth = source.width * scale;
+    const displayHeight = source.height * scale;
+    const desiredX =
+      WorldMapScene.MAP_ARTWORK_X + WorldMapScene.MAP_ARTWORK_WIDTH * 0.5 - displayWidth * config.focalX;
+    const desiredY = VIEWPORT.height * 0.5 - displayHeight * config.focalY;
+    const imageX = Phaser.Math.Clamp(
+      desiredX,
+      WorldMapScene.MAP_ARTWORK_X + WorldMapScene.MAP_ARTWORK_WIDTH - displayWidth,
+      WorldMapScene.MAP_ARTWORK_X
+    );
+    const imageY = Phaser.Math.Clamp(desiredY, VIEWPORT.height - displayHeight, 0);
+    const washTextureKey = this.createReadabilityWashTexture(config);
+    const hazeTextureKey = this.createHorizonHazeTexture(config);
+    const hazeAlpha = config.horizonHazeAlpha ?? 0;
+
+    return {
+      image: this.add
+        .image(imageX, imageY, config.textureKey)
+        .setOrigin(0)
+        .setDisplaySize(displayWidth, displayHeight)
+        .setScrollFactor(0)
+        .setDepth(-10)
+        .setAlpha(config.imageAlpha * alphaMultiplier),
+      wash: this.add
+        .image(WorldMapScene.MAP_ARTWORK_X, 0, washTextureKey)
+        .setOrigin(0)
+        .setScrollFactor(0)
+        .setDepth(-8)
+        .setAlpha(alphaMultiplier),
+      haze: this.add
+        .image(WorldMapScene.MAP_ARTWORK_X, 0, hazeTextureKey)
+        .setOrigin(0)
+        .setScrollFactor(0)
+        .setDepth(-7)
+        .setAlpha(hazeAlpha * alphaMultiplier),
+      imageAlpha: config.imageAlpha,
+      hazeAlpha,
+      washTextureKey,
+      hazeTextureKey
+    };
+  }
+
+  private destroyBiomeBackground(frame: BiomeBackgroundFrame): void {
+    this.tweens.killTweensOf(frame.image);
+    this.tweens.killTweensOf(frame.wash);
+    this.tweens.killTweensOf(frame.haze);
+    frame.image.destroy();
+    frame.wash.destroy();
+    frame.haze.destroy();
+
+    if (this.textures.exists(frame.washTextureKey)) {
+      this.textures.remove(frame.washTextureKey);
+    }
+
+    if (this.textures.exists(frame.hazeTextureKey)) {
+      this.textures.remove(frame.hazeTextureKey);
+    }
+  }
+
+  private updateBiomeBackground(regionId: RegionId, immediate = false): void {
+    const config = getBiomeBackgroundConfig(regionId);
+    const textureKey = config.textureKey;
+
+    if (textureKey === this.biomeBackgroundKey && this.biomeBackgroundFrame) {
       return;
     }
 
-    const nextBackdrop = this.createBiomeBackdrop(textureKey, immediate ? 0.94 : 0);
-    const previousBackdrop = this.biomeBackdrop;
-    this.biomeBackdrop = nextBackdrop;
-    this.biomeBackdropKey = textureKey;
+    const nextFrame = this.createBiomeBackground(config, immediate ? 1 : 0);
+    const previousFrame = this.biomeBackgroundFrame;
+    this.biomeBackgroundFrame = nextFrame;
+    this.biomeBackgroundKey = textureKey;
 
-    if (immediate || !previousBackdrop) {
-      previousBackdrop?.destroy();
+    if (immediate || !previousFrame) {
+      if (previousFrame) {
+        this.destroyBiomeBackground(previousFrame);
+      }
       return;
     }
 
-    this.tweens.killTweensOf(previousBackdrop);
     this.tweens.add({
-      targets: previousBackdrop,
+      targets: [previousFrame.image, previousFrame.wash, previousFrame.haze],
       alpha: 0,
       duration: 520,
       ease: "Sine.easeInOut",
-      onComplete: () => previousBackdrop.destroy()
+      onComplete: () => this.destroyBiomeBackground(previousFrame)
     });
     this.tweens.add({
-      targets: nextBackdrop,
-      alpha: 0.94,
+      targets: nextFrame.image,
+      alpha: nextFrame.imageAlpha,
+      duration: 520,
+      ease: "Sine.easeInOut"
+    });
+    this.tweens.add({
+      targets: nextFrame.wash,
+      alpha: 1,
+      duration: 520,
+      ease: "Sine.easeInOut"
+    });
+    this.tweens.add({
+      targets: nextFrame.haze,
+      alpha: nextFrame.hazeAlpha,
       duration: 520,
       ease: "Sine.easeInOut"
     });
@@ -229,7 +436,7 @@ export class WorldMapScene extends Phaser.Scene {
         const selected = node.id === this.selectedNodeId || nextNode.id === this.selectedNodeId;
         const reachable = !completed && (state.availableNodeIds.includes(node.id) || state.availableNodeIds.includes(nextNode.id));
         const color = selected ? COLORS.gold : completed ? 0x647381 : reachable ? region.edge : 0x3b4651;
-        const alpha = selected ? 0.94 : completed ? 0.42 : reachable ? 0.64 : 0.24;
+        const alpha = selected ? 0.94 : completed ? 0.42 : reachable ? 0.64 : 0.27;
         const width = selected ? 4 : reachable ? 2.5 : completed ? 2 : 1.5;
 
         graphics.lineStyle(width + 2, 0x071019, selected ? 0.5 : 0.28);
@@ -244,6 +451,8 @@ export class WorldMapScene extends Phaser.Scene {
   }
 
   private drawNodes(nodes: WorldNodeDefinition[]): void {
+    const backdropTextureKey = this.createNodeBackdropTexture();
+
     for (const node of nodes) {
       const position = this.getNodePosition(node);
       const interactive = this.add
@@ -251,25 +460,37 @@ export class WorldMapScene extends Phaser.Scene {
         .setInteractive({ useHandCursor: true })
         .setDepth(4);
       const flare = this.add.ellipse(position.x, position.y, 116, 74, 0xd9b67a, 0.08).setDepth(1.5);
+      const backdrop = this.add
+        .image(position.x, position.y, backdropTextureKey)
+        .setDisplaySize(
+          WorldMapScene.NODE_CARD_WIDTH + WorldMapScene.NODE_BACKDROP_PADDING * 2,
+          WorldMapScene.NODE_CARD_HEIGHT + WorldMapScene.NODE_BACKDROP_PADDING * 2
+        )
+        .setDepth(1.75)
+        .setAlpha(0.16);
       const background = this.add
-        .rectangle(position.x, position.y, 100, 58, COLORS.panelSoft, 0.96)
+        .rectangle(
+          position.x,
+          position.y,
+          WorldMapScene.NODE_CARD_WIDTH,
+          WorldMapScene.NODE_CARD_HEIGHT,
+          COLORS.panelSoft,
+          0.96
+        )
         .setDepth(2)
         .setStrokeStyle(2, COLORS.panelEdge, 1);
       const title = this.add
         .text(position.x, position.y - 8, "", { ...TEXT.button, fontSize: "14px", align: "center" })
         .setOrigin(0.5)
         .setWordWrapWidth(82)
+        .setShadow(1, 1, "#091019", 2, false, true)
         .setDepth(3);
       const subtitle = this.add
         .text(position.x, position.y + 12, "", { ...TEXT.caption, fontSize: "11px", align: "center" })
         .setOrigin(0.5)
         .setWordWrapWidth(82)
+        .setShadow(1, 1, "#091019", 2, false, true)
         .setDepth(3);
-      const tag = this.add
-        .text(position.x, position.y - 30, "", { ...TEXT.caption, color: colorHex(COLORS.gold) })
-        .setOrigin(0.5)
-        .setDepth(3);
-
       interactive.on("pointerup", () => {
         this.selectedNodeId = node.id;
         this.refreshView();
@@ -277,10 +498,10 @@ export class WorldMapScene extends Phaser.Scene {
 
       this.nodeCards.set(node.id, {
         flare,
+        backdrop,
         background,
         title,
-        subtitle,
-        tag
+        subtitle
       });
     }
   }
@@ -395,6 +616,7 @@ export class WorldMapScene extends Phaser.Scene {
         selected ? 0.28 : available ? 0.18 : 0.1
       );
       handle.flare.setAlpha(alpha);
+      handle.backdrop.setAlpha(selected ? 0.18 : available ? 0.16 : visited ? 0.14 : 0.12);
       handle.background.setFillStyle(fill, selected ? 0.96 : 0.9);
       handle.background.setStrokeStyle(
         boss ? 4 : challenge ? 3 : special && (available || visited || selected) ? 3 : 2,
@@ -426,8 +648,6 @@ export class WorldMapScene extends Phaser.Scene {
       handle.subtitle.setColor(
         boss ? colorHex(COLORS.gold) : challenge ? "#e1c489" : available || selected ? colorHex(COLORS.subtext) : "#66727d"
       );
-      handle.tag.setText(boss ? "BOSS" : challenge ? "VOW" : node.type === "miniboss" ? "Elite" : "");
-      handle.tag.setAlpha(boss || challenge || node.type === "miniboss" ? 1 : 0);
     }
 
     if (!selectedNode) {
@@ -441,10 +661,11 @@ export class WorldMapScene extends Phaser.Scene {
     }
 
     const region = gameManager.getRegionDefinition(selectedNode.regionId);
-    this.updateBiomeBackdrop(selectedNode.regionId);
+    this.updateBiomeBackground(selectedNode.regionId);
     const available = gameManager.canTravelToWorldNode(selectedNode.id);
     const bossDefinition = selectedNode.bossId ? getBossDefinition(selectedNode.bossId) : null;
     const challengeDefinition = selectedNode.challengeId ? getChallengeShrineDefinition(selectedNode.challengeId) : null;
+    const selectedEnemy = selectedNode.enemyId ? getEnemyDefinition(selectedNode.eliteEnemyId ?? selectedNode.enemyId) : null;
     const arenaEnvironment = selectedNode.arenaEnvironmentId ? getArenaEnvironmentDefinition(selectedNode.arenaEnvironmentId) : null;
     const eventDefinition = selectedNode.eventId ? getRunEventDefinition(selectedNode.eventId) : undefined;
     const eventTraining = eventDefinition?.choices
@@ -469,8 +690,10 @@ export class WorldMapScene extends Phaser.Scene {
         arenaEnvironment ? `Arena condition: ${arenaEnvironment.name} - ${arenaEnvironment.summary}` : "",
         selectedNode.type === "boss"
           ? `Boss arena: ${bossDefinition?.arenaTitle ?? selectedNode.title}`
-          : selectedNode.type === "battle" || selectedNode.type === "miniboss" || selectedNode.type === "challenge"
-            ? `Enemy roster: ${region.enemyRoster.join(", ")}`
+          : selectedNode.type === "battle"
+            ? `Enemy pool:\n${region.enemyRoster.map((enemyName) => `• ${enemyName}`).join("\n")}`
+            : selectedNode.type === "miniboss" || selectedNode.type === "challenge"
+            ? `Opponent: ${selectedEnemy?.name ?? "Unknown"}`
             : `Site: ${this.describeNodeType(selectedNode)}`
       ]
         .filter((entry) => entry.length > 0)
@@ -1353,10 +1576,10 @@ export class WorldMapScene extends Phaser.Scene {
     }
 
     if (node.type === "boss") {
-      return "Boss";
+      return "";
     }
 
-    return node.type === "miniboss" ? "Elite" : "Battle";
+    return node.type === "miniboss" ? "" : "Battle";
   }
 
   private describeNodeType(node: WorldNodeDefinition): string {

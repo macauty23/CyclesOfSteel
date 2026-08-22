@@ -44,6 +44,9 @@ export type SwordId =
   | "langesMesser"
   | "twoHandedMesser";
 export type AttackKind = "light" | "heavy";
+export type GuardType = "plow" | "day" | "ox" | "fool";
+export type BindFollowupType = "standard" | "defensive" | "offensive";
+export type GuardAttackEmpowerment = "day" | "ox" | "fool";
 export type AttackShape = "thrust" | "sweep";
 export type AttackClass = "standard" | "cleave" | "lunge";
 export type AttackDelivery = "melee" | "ranged";
@@ -603,6 +606,8 @@ export interface WorldNodeDefinition {
   nextNodeIds: string[];
   rewardMaterials: MaterialCost;
   enemyId?: EnemyId;
+  /** The concrete opponent rolled when an elite node is generated. */
+  eliteEnemyId?: EnemyId;
   armor?: EnemyArmorTier;
   pattern?: EnemyPattern;
   optional?: boolean;
@@ -830,6 +835,7 @@ export interface AttackExecutionSignal {
     y: number;
   };
   angle: number;
+  guardEmpowerment?: GuardAttackEmpowerment;
 }
 
 export interface CombatStatusSnapshot {
@@ -847,4 +853,9 @@ export interface CombatStatusSnapshot {
   isDashing: boolean;
   isAttacking: boolean;
   isParrying: boolean;
+  isGuarding: boolean;
+  guardType: GuardType | null;
+  guardBreakRemaining: number;
+  bindDecisionRemaining: number;
+  isBindDecisionActive: boolean;
 }

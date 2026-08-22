@@ -10,6 +10,7 @@ import type {
 } from "../core/types";
 import { formatMaterialCost, formatMaterialInventory } from "../data/materials";
 import { createButton, type ButtonHandle } from "../ui/createButton";
+import { fadeInMajorScene } from "../ui/sceneFades";
 import { COLORS, TEXT, VIEWPORT, colorHex } from "../ui/theme";
 
 const PART_ORDER: SwordPartId[] = ["blade", "crossGuard", "pommel", "hilt", "tip"];
@@ -67,6 +68,7 @@ export class ModificationScene extends Phaser.Scene {
   }
 
   create(): void {
+    fadeInMajorScene(this);
     this.partButtons.clear();
     this.optionCards.clear();
     this.optionCardRoots = [];

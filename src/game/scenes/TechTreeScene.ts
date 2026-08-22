@@ -11,6 +11,7 @@ import {
 import { TechTreeBoard } from "../ui/TechTreeBoard";
 import { createGuidedOverlay, type GuidedOverlayHandle } from "../ui/createGuidedOverlay";
 import { createButton } from "../ui/createButton";
+import { fadeInMajorScene } from "../ui/sceneFades";
 import {
   TECH_TREE_DRAG_PADDING_X,
   TECH_TREE_DRAG_PADDING_Y,
@@ -39,6 +40,7 @@ export class TechTreeScene extends Phaser.Scene {
   }
 
   create(): void {
+    fadeInMajorScene(this);
     this.input.mouse?.disableContextMenu();
     const unlockedNodes = gameManager.getUnlockedWeaponTechDefinitions();
     this.focusedTechNodeId = unlockedNodes.length > 0 ? unlockedNodes[unlockedNodes.length - 1].id : "armingSword";
