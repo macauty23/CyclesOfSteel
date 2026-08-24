@@ -83,6 +83,7 @@ export class CombatController {
   private controlLockRemaining = 0;
   private moveBoostRemaining = 0;
   private moveBoostMultiplier = 1;
+  private nextAttackStaminaDiscount = 0;
   private stamina = 0;
   private isGuarding = false;
   private guardType: GuardType = "plow";
@@ -225,6 +226,22 @@ export class CombatController {
 
     this.moveBoostMultiplier = Math.max(this.moveBoostMultiplier, multiplier);
     this.moveBoostRemaining = Math.max(this.moveBoostRemaining, durationMs);
+  }
+
+  clearMoveBoost(): void {
+    this.moveBoostRemaining = 0;
+    this.moveBoostMultiplier = 1;
+    this.actor.body.setMaxVelocity(this.stats.moveSpeed * 1.5, this.stats.moveSpeed * 1.5);
+  }
+
+  applyNextAttackStaminaDiscount(amount: number): void {
+    this.nextAttackStaminaDiscount = Math.max(this.nextAttackStaminaDiscount, Math.max(0, amount));
+  }
+
+  /** The game currently has no player DoT; control locks and guard break are its negative combat states. */
+  cleanseNegativeStates(): void {
+    this.controlLockRemaining = 0;
+    this.guardBreakRemaining = 0;
   }
 
   scaleCurrentRecovery(factor: number): void {
@@ -608,11 +625,15 @@ export class CombatController {
   private startAttack(kind: AttackKind): void {
     const profile = { ...(kind === "light" ? this.stats.lightAttack : this.stats.heavyAttack) };
     const baseRange = kind === "light" ? this.stats.combatStyle.lightAttack.range : this.stats.combatStyle.heavyAttack.range;
+    const staminaCost = Math.max(1, Math.round(profile.staminaCost - this.nextAttackStaminaDiscount));
 
-    if (this.stamina < profile.staminaCost) {
+    if (this.stamina < staminaCost) {
       this.onActionRejected?.("stamina");
       return;
     }
+
+    profile.staminaCost = staminaCost;
+    this.nextAttackStaminaDiscount = 0;
 
     const direction = this.facing.clone().normalize();
     const baseSignal: AttackExecutionSignal = {
@@ -621,6 +642,7 @@ export class CombatController {
       profile,
       rangeAnchor: baseRange,
       fullyCharged: false,
+      committedStamina: this.stamina,
       direction: {
         x: direction.x,
         y: direction.y

@@ -3,6 +3,7 @@ import { gameManager } from "../core/GameManager";
 import type { WeaponTechDefinition, WeaponTechNodeId } from "../core/types";
 import { formatShortMaterialCost } from "../data/materials";
 import { WEAPON_TECH_TREE } from "../data/weaponTechTree";
+import { SWORD_DEFINITIONS } from "../data/swords";
 import { COLORS, TEXT, colorHex } from "./theme";
 import { TECH_NODE_HEIGHT, TECH_NODE_WIDTH, TECH_TREE_Y_OFFSET, getTechTreeBounds } from "./techTreeLayout";
 
@@ -16,7 +17,7 @@ interface TechNodeCardHandle {
     locked: boolean;
     adjacentToUnlocked: boolean;
   }): void;
-  playExcaliburReveal(): void;
+  playLegendaryReveal(): void;
   setCinematicDimmed(dimmed: boolean): void;
 }
 
@@ -116,13 +117,13 @@ export class TechTreeBoard {
     this.drawConnections();
   }
 
-  playExcaliburReveal(): void {
-    this.techNodeCards.get("longsword")?.playExcaliburReveal();
+  playLegendaryReveal(nodeId: WeaponTechNodeId): void {
+    this.techNodeCards.get(nodeId)?.playLegendaryReveal();
   }
 
-  setExcaliburCinematicDimmed(dimmed: boolean): void {
+  setLegendaryCinematicDimmed(dimmed: boolean, legendaryNodeId: WeaponTechNodeId): void {
     this.lineGraphics.setAlpha(dimmed ? 0.28 : 1);
-    this.techNodeCards.forEach((card, nodeId) => card.setCinematicDimmed(dimmed && nodeId !== "longsword"));
+    this.techNodeCards.forEach((card, nodeId) => card.setCinematicDimmed(dimmed && nodeId !== legendaryNodeId));
   }
 
   getLocalBounds(): ReturnType<typeof getTechTreeBounds> {
@@ -136,8 +137,8 @@ export class TechTreeBoard {
     let affordable = false;
     let locked = false;
     let adjacentToUnlocked = false;
-    const isLongsword = definition.id === "longsword";
-    let excaliburPresentationShown = isLongsword && gameManager.isLegendarySwordUnlocked("excalibur");
+    const legendarySwordId = gameManager.getLegendarySwordForTechNode(definition.id);
+    let legendaryPresentationShown = Boolean(legendarySwordId && gameManager.isLegendarySwordUnlocked(legendarySwordId));
     let cinematicDimmed = false;
     let revealPlaying = false;
     const radiance = this.scene.add.circle(0, 0, TECH_NODE_WIDTH * 1.8, COLORS.gold, 0);
@@ -194,9 +195,9 @@ export class TechTreeBoard {
     ]);
 
     const refresh = (): void => {
-      const excalibur = gameManager.getExcaliburAscensionState();
-      const excaliburShown = isLongsword && excalibur.revealed && excaliburPresentationShown;
-      const accent = excaliburShown ? COLORS.gold : definition.accent;
+      const legendary = legendarySwordId ? gameManager.getLegendaryAscensionState(legendarySwordId) : null;
+      const legendaryShown = Boolean(legendarySwordId && legendary?.revealed && legendaryPresentationShown);
+      const accent = legendaryShown && legendarySwordId ? SWORD_DEFINITIONS[legendarySwordId].accent : definition.accent;
       const fillColor = unlocked
         ? mixColor(COLORS.panel, accent, 0.36)
         : locked
@@ -232,11 +233,11 @@ export class TechTreeBoard {
               : "#6a7681";
       const glowAlpha = !adjacentToUnlocked ? 0 : focused ? 0.2 : unlocked ? 0.13 : available ? 0.11 : 0.05;
       const accentBarGlowAlpha = !adjacentToUnlocked ? 0 : focused ? 0.3 : unlocked ? 0.22 : available ? 0.2 : 0.08;
-      const accentHighlightColor = adjacentToUnlocked || excaliburShown ? COLORS.gold : accent;
+      const accentHighlightColor = adjacentToUnlocked || legendaryShown ? COLORS.gold : accent;
 
       shadow.setFillStyle(0x05090f, focused ? 0.42 : unlocked ? 0.38 : available ? 0.33 : 0.24);
-      glow.setFillStyle(accent, excaliburShown ? Math.max(glowAlpha, 0.16) : glowAlpha);
-      radiance.setFillStyle(COLORS.gold, excaliburShown ? 0.1 : 0);
+      glow.setFillStyle(accent, legendaryShown ? Math.max(glowAlpha, 0.16) : glowAlpha);
+      radiance.setFillStyle(accent, legendaryShown ? 0.1 : 0);
       background.setFillStyle(fillColor, unlocked ? 0.98 : available ? 0.96 : 0.9);
       background.setStrokeStyle(2, strokeColor, focused || unlocked || available || locked ? 1 : 0.55);
       innerPanel.setFillStyle(innerColor, 0.98);
@@ -249,9 +250,9 @@ export class TechTreeBoard {
         locked ? 0x5a4f4f : focused ? COLORS.gold : accent,
         locked ? 0.18 : focused ? 0.75 : unlocked ? 0.56 : available ? 0.4 : 0.2
       );
-      title.setText(excaliburShown ? "Excalibur" : definition.shortName);
+      title.setText(legendaryShown && legendarySwordId ? SWORD_DEFINITIONS[legendarySwordId].name : definition.shortName);
       this.fitNodeTitle(title, 94, 28);
-      title.setColor(excaliburShown ? colorHex(COLORS.gold) : titleColor);
+      title.setColor(legendaryShown ? colorHex(accent) : titleColor);
       costText.setColor(costColor);
       root.setAlpha((unlocked ? 1 : locked ? 0.56 : available ? affordable ? 1 : 0.86 : 0.62) * (cinematicDimmed ? 0.3 : 1));
       root.setDepth(focused ? 12 : unlocked ? 9 : available ? 7 : 5);
@@ -301,18 +302,18 @@ export class TechTreeBoard {
         locked = nextState.locked;
         adjacentToUnlocked = nextState.adjacentToUnlocked;
         costText.setText(
-          isLongsword && gameManager.getExcaliburAscensionState().revealed && excaliburPresentationShown
-            ? gameManager.getExcaliburAscensionState().unlocked
+          legendarySwordId && gameManager.getLegendaryAscensionState(legendarySwordId).revealed && legendaryPresentationShown
+            ? gameManager.getLegendaryAscensionState(legendarySwordId).unlocked
               ? "Claimed"
-              : gameManager.canAscendLongswordToExcalibur() ? "Unclaimed" : "Forged"
+              : gameManager.canAscendToLegendary(legendarySwordId) ? "Unclaimed" : "Forged"
             : unlocked ? "Forged" : locked ? "Sealed" : available ? formatShortMaterialCost(definition.cost) : "Locked"
         );
         refresh();
       },
-      playExcaliburReveal() {
-        if (!isLongsword || revealPlaying) return;
+      playLegendaryReveal() {
+        if (!legendarySwordId || revealPlaying) return;
         revealPlaying = true;
-        board.setExcaliburCinematicDimmed(true);
+        board.setLegendaryCinematicDimmed(true, definition.id);
 
         scene.tweens.add({
           targets: root,
@@ -334,7 +335,7 @@ export class TechTreeBoard {
             duration: 250,
             ease: "Sine.easeIn",
             onComplete: () => {
-              excaliburPresentationShown = true;
+              legendaryPresentationShown = true;
               refresh();
               root.setAlpha(0).setScale(0.85);
               radiance.setAlpha(0.6).setScale(0.34);
@@ -344,7 +345,7 @@ export class TechTreeBoard {
               scene.tweens.add({ targets: glow, alpha: 0.52, duration: 180, yoyo: true, repeat: 2, ease: "Sine.easeInOut" });
 
               scene.time.delayedCall(620, () => {
-                board.setExcaliburCinematicDimmed(false);
+                board.setLegendaryCinematicDimmed(false, definition.id);
                 scene.tweens.add({ targets: root, scaleX: 1.025, scaleY: 1.025, duration: 180, yoyo: true, ease: "Sine.easeInOut" });
                 revealPlaying = false;
               });

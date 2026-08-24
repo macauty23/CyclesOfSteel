@@ -28,6 +28,7 @@ import { MaterialPickup } from "../entities/MaterialPickup";
 import { PlaceholderEnemy } from "../entities/PlaceholderEnemy";
 import { CombatController } from "../systems/CombatController";
 import { COMBAT_TUNING } from "../systems/combatTuning";
+import { WEAPON_TECH_TUNING } from "../data/weaponTechTuning";
 import {
   TUTORIAL_COMPLETION_PAGES,
   TUTORIAL_FINAL_NODE_ID,
@@ -53,7 +54,9 @@ const RAPIER_SPRITE_SWORDS = new Set([
   "courtRapier",
   "mastersRapier",
   "needleblade",
-  "pappenheimerRapier"
+  "pappenheimerRapier",
+  "tizona",
+  "colada"
 ]);
 
 type PlayerBody = Phaser.GameObjects.Rectangle & {
@@ -141,13 +144,17 @@ export class GameScene extends Phaser.Scene {
   private challengeTickRemaining = 0;
   private baseEnemyDrag = 1760;
   private activeAbilityKey: Phaser.Input.Keyboard.Key | null = null;
-  private excaliburAbilityCooldownRemaining = 0;
+  private legendaryAbilityCooldownRemaining = 0;
   private judgmentActive = false;
   private judgmentStacks = 0;
   private judgmentRangePenalty = 0;
   private judgmentAura: Phaser.GameObjects.Arc | null = null;
   private holyMirages: HolyMirageState[] = [];
   private holyFields: HolyFieldState[] = [];
+  private tizonaFlameRemaining = 0;
+  private tizonaFlameCleanHits = 0;
+  private tizonaFlameAura: Phaser.GameObjects.Arc | null = null;
+  private coladaWillSpent = false;
 
   private activeAttack: AttackExecutionSignal | null = null;
   private activeAttackVisual: Phaser.GameObjects.Container | null = null;
@@ -188,6 +195,15 @@ export class GameScene extends Phaser.Scene {
   private dashPassTriggeredThisDash = false;
   private stillnessChargeProgress = 0;
   private stillnessStacks = 0;
+  private rollingEdgeStacks = 0;
+  private commandingEdgeSweepCount = 0;
+  private redirectionSweepRemaining = 0;
+  private noQuarterHeavyRemaining = 0;
+  private countercutLightRemaining = 0;
+  private indesAttackRemaining = 0;
+  private vorAttackRemaining = 0;
+  private campaignerUsed = false;
+  private relentlessStacks = 0;
   private lastSuccessfulAttackKind: AttackKind | null = null;
   private lastSuccessfulAttackShape: AttackShape | null = null;
   private playerWeaponForwardOffset = 0;
@@ -255,7 +271,7 @@ export class GameScene extends Phaser.Scene {
     this.comboTimerRemaining = 0;
     this.bestCombo = 0;
     this.hitStopRemaining = 0;
-    this.excaliburAbilityCooldownRemaining = 0;
+    this.legendaryAbilityCooldownRemaining = 0;
     this.firstBloodAvailable = true;
     this.thrustStreak = 0;
     this.nextAttackBonusDamage = 0;
@@ -274,6 +290,20 @@ export class GameScene extends Phaser.Scene {
     this.dashPassTriggeredThisDash = false;
     this.stillnessChargeProgress = 0;
     this.stillnessStacks = 0;
+    this.rollingEdgeStacks = 0;
+    this.commandingEdgeSweepCount = 0;
+    this.redirectionSweepRemaining = 0;
+    this.noQuarterHeavyRemaining = 0;
+    this.countercutLightRemaining = 0;
+    this.indesAttackRemaining = 0;
+    this.vorAttackRemaining = 0;
+    this.campaignerUsed = false;
+    this.relentlessStacks = 0;
+    this.tizonaFlameRemaining = 0;
+    this.tizonaFlameCleanHits = 0;
+    this.tizonaFlameAura?.destroy();
+    this.tizonaFlameAura = null;
+    this.coladaWillSpent = false;
     this.lastSuccessfulAttackKind = null;
     this.lastSuccessfulAttackShape = null;
     this.playerWeaponForwardOffset = 0;
@@ -688,8 +718,8 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (this.excaliburAbilityCooldownRemaining > 0) {
-      this.excaliburAbilityCooldownRemaining = Math.max(0, this.excaliburAbilityCooldownRemaining - delta);
+    if (this.legendaryAbilityCooldownRemaining > 0) {
+      this.legendaryAbilityCooldownRemaining = Math.max(0, this.legendaryAbilityCooldownRemaining - delta);
     }
 
     this.updateDivinityJudgment();
@@ -745,6 +775,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.updateCombatPolishStates(delta);
+    this.updateWeaponTechniqueStates(delta);
 
     if (this.comboTimerRemaining > 0) {
       this.comboTimerRemaining = Math.max(0, this.comboTimerRemaining - delta);
@@ -799,6 +830,11 @@ export class GameScene extends Phaser.Scene {
       }
 
       if (enemyEvents.endedAttack) {
+        if (this.enemy instanceof BossEnemy && !this.enemyAttackResolved && this.enemyActiveAttack?.id === enemyEvents.endedAttack.id) {
+          if (this.enemy.notifyAttackMissed(enemyEvents.endedAttack)) {
+            this.pushFeedback("Momentum broken — punish the overshoot.", 0x67c5dc);
+          }
+        }
         this.closeEnemyAttackWindow();
       }
 
@@ -883,16 +919,34 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (this.excaliburAbilityCooldownRemaining > 0) {
+    if (this.legendaryAbilityCooldownRemaining > 0) {
       this.pushFeedback(`${techniques.activeAbilityName} recharging`, 0xd8c283);
+      return;
+    }
+
+    if (this.currentStats.sword.id === "tizona") {
+      this.activateForceOfFlame();
       return;
     }
 
     this.activateDivinityJudgment();
   }
 
+  private activateForceOfFlame(): void {
+    const techniques = this.currentStats.sword.techniques;
+    this.legendaryAbilityCooldownRemaining = techniques.activeAbilityCooldownMs ?? WEAPON_TECH_TUNING.legendary.tizona.cooldownMs;
+    this.controller.cleanseNegativeStates();
+    this.tizonaFlameRemaining = techniques.tizonaFlameDurationMs ?? WEAPON_TECH_TUNING.legendary.tizona.flameDurationMs;
+    this.tizonaFlameCleanHits = 0;
+    this.tizonaFlameAura?.destroy();
+    this.tizonaFlameAura = this.add.circle(this.player.x, this.player.y, 33, 0xf06d35, 0.1).setStrokeStyle(2, 0xffbd6c, 0.56).setDepth(5.6);
+    this.player.setFillStyle(0xffc071);
+    this.tweens.add({ targets: this.player, alpha: 0.72, duration: 86, yoyo: true, repeat: 1, onComplete: () => this.player.setFillStyle(this.currentStats.sword.accent) });
+    this.pushFeedback("Force of Flame", 0xffaa58);
+  }
+
   private activateDivinityJudgment(): void {
-    this.excaliburAbilityCooldownRemaining = this.currentStats.sword.techniques.activeAbilityCooldownMs ?? 30000;
+    this.legendaryAbilityCooldownRemaining = this.currentStats.sword.techniques.activeAbilityCooldownMs ?? 30000;
     this.judgmentActive = true;
     this.judgmentStacks = 0;
     this.judgmentRangePenalty = 0;
@@ -1647,6 +1701,7 @@ export class GameScene extends Phaser.Scene {
     };
     let rangeAnchor = signal.rangeAnchor;
     let guardEmpowerment = signal.guardEmpowerment;
+    let weaponTechniqueProc = signal.weaponTechniqueProc;
 
     profile.damage += this.currentStats.damageBonus;
     profile.range += this.currentStats.reachBonus;
@@ -1668,6 +1723,17 @@ export class GameScene extends Phaser.Scene {
 
     if (profile.shape === "sweep") {
       profile.width += techniques.sweepWidthBonus ?? 0;
+
+      if (this.redirectionSweepRemaining > 0 && techniques.redirectionSweepRangeBonus && techniques.redirectionImpactMultiplier) {
+        profile.range += techniques.redirectionSweepRangeBonus;
+        profile.impact = {
+          ...profile.impact,
+          displacement: Math.round(profile.impact.displacement * techniques.redirectionImpactMultiplier),
+          controlLossMs: Math.round(profile.impact.controlLossMs * techniques.redirectionImpactMultiplier)
+        };
+        this.redirectionSweepRemaining = 0;
+        this.pushFeedback("Redirection sweep", 0xf0cf8c);
+      }
     }
 
     if (signal.kind === "heavy") {
@@ -1740,6 +1806,46 @@ export class GameScene extends Phaser.Scene {
       profile.commitWeight = Math.max(0.24, profile.commitWeight - 0.06);
     }
 
+    if (this.noQuarterHeavyRemaining > 0 && signal.kind === "heavy" && techniques.noQuarterNextHeavyDamageMultiplier) {
+      profile.damage = Math.round(profile.damage * techniques.noQuarterNextHeavyDamageMultiplier);
+      this.noQuarterHeavyRemaining = 0;
+      this.pushFeedback("No Quarter", 0xd2b190);
+    }
+
+    if (this.countercutLightRemaining > 0 && signal.kind === "light" && techniques.countercutLightDamageMultiplier) {
+      profile.damage = Math.round(profile.damage * techniques.countercutLightDamageMultiplier);
+      this.countercutLightRemaining = 0;
+      this.pushFeedback("Countercut", 0xb9d1bf);
+    }
+
+    if (this.indesAttackRemaining > 0 && techniques.indesWindupScale) {
+      profile.windup = Math.max(36, Math.round(profile.windup * techniques.indesWindupScale));
+      this.indesAttackRemaining = 0;
+      this.pushFeedback("Indes", 0xcfe6d5);
+    }
+
+    if (this.vorAttackRemaining > 0 && techniques.vorRecoveryScale && techniques.vorImpactMultiplier) {
+      profile.recovery = Math.max(42, Math.round(profile.recovery * techniques.vorRecoveryScale));
+      profile.impact = {
+        ...profile.impact,
+        displacement: Math.round(profile.impact.displacement * techniques.vorImpactMultiplier),
+        controlLossMs: Math.round(profile.impact.controlLossMs * techniques.vorImpactMultiplier)
+      };
+      weaponTechniqueProc = "vor";
+      this.vorAttackRemaining = 0;
+      this.pushFeedback("Vor", 0xe5f6d6);
+    }
+
+    if (this.tizonaFlameRemaining > 0) {
+      const flameBonus =
+        (techniques.tizonaFlameBaseDamageBonus ?? 0) +
+        this.tizonaFlameCleanHits * (techniques.tizonaFlameCleanHitDamageStep ?? 0) +
+        comboMode.tier * (techniques.tizonaFlameFlowDamageBonus ?? 0) +
+        (comboMode.tier >= 3 ? (techniques.tizonaFlameDominionDamageBonus ?? 0) : 0);
+      profile.damage += flameBonus;
+      profile.tint = 0xff9a4f;
+    }
+
     if (this.judgmentActive) {
       const minimumReach = profile.shape === "thrust" ? 58 : 70;
       profile.range = Math.max(minimumReach, profile.range - this.judgmentRangePenalty);
@@ -1775,6 +1881,7 @@ export class GameScene extends Phaser.Scene {
       ...signal,
       rangeAnchor,
       guardEmpowerment,
+      weaponTechniqueProc,
       profile
     };
   }
@@ -2085,7 +2192,7 @@ export class GameScene extends Phaser.Scene {
     const didKill = this.enemy.takeDamage(damage, direction, impact);
     if (!didKill) {
       this.enemy.stun(stunMs);
-      this.applyBindRewards(context.perfect);
+      this.applyBindRewards(context.perfect, resolvedType);
     }
 
     this.spawnBindOutcomeFx(context, resolvedType, impact, color);
@@ -2128,6 +2235,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.spawnGuardBlockFx(contactX, contactY, projectile);
+    if (this.enemy instanceof BossEnemy) {
+      this.enemy.noteRegainedInitiative();
+    }
     this.applyHitStop(projectile ? 14 : 20);
     if (this.controller.getStatus().guardBreakRemaining > 0) {
       this.pushFeedback("Guard Break", COLORS.danger);
@@ -2164,6 +2274,28 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: this.player, scaleX: 1, scaleY: 1, duration: 170, ease: "Back.out" });
     this.cameras.main.shake(120, 0.0052);
     this.pushFeedback("Guard Break", COLORS.danger);
+  }
+
+  private updateWeaponTechniqueStates(delta: number): void {
+    const tick = (value: number): number => Math.max(0, value - delta);
+    this.redirectionSweepRemaining = tick(this.redirectionSweepRemaining);
+    this.noQuarterHeavyRemaining = tick(this.noQuarterHeavyRemaining);
+    this.countercutLightRemaining = tick(this.countercutLightRemaining);
+    this.indesAttackRemaining = tick(this.indesAttackRemaining);
+    this.vorAttackRemaining = tick(this.vorAttackRemaining);
+
+    if (this.tizonaFlameRemaining <= 0) {
+      return;
+    }
+
+    this.tizonaFlameRemaining = tick(this.tizonaFlameRemaining);
+    this.tizonaFlameAura?.setPosition(this.player.x, this.player.y).setAlpha(0.1 + Math.sin(this.time.now / 90) * 0.025 + this.tizonaFlameCleanHits * 0.014);
+    if (this.tizonaFlameRemaining === 0) {
+      this.tizonaFlameCleanHits = 0;
+      this.tizonaFlameAura?.destroy();
+      this.tizonaFlameAura = null;
+      this.pushFeedback("Flame spent", 0xe28b49);
+    }
   }
 
   private updateCombatPolishStates(delta: number): void {
@@ -2327,17 +2459,30 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const ring = this.add.circle(0, 0, signal.radius, signal.tint, signal.kind === "bearTrap" ? 0.14 : 0.12).setStrokeStyle(2, signal.tint, 0.5);
-    const core = this.add.circle(0, 0, Math.max(6, signal.radius * 0.26), signal.tint, signal.kind === "bearTrap" ? 0.4 : 0.26);
+    const currentZone = signal.kind === "currentZone";
+    const predictionSigil = signal.kind === "predictionSigil";
+    const ring = this.add.circle(0, 0, signal.radius, signal.tint, signal.kind === "bearTrap" ? 0.14 : currentZone ? 0.1 : 0.12).setStrokeStyle(2, signal.tint, predictionSigil ? 0.78 : 0.5);
+    const core = this.add.circle(0, 0, Math.max(6, signal.radius * (predictionSigil ? 0.18 : 0.26)), signal.tint, signal.kind === "bearTrap" ? 0.4 : currentZone ? 0.2 : 0.26);
     const markerA =
-      signal.kind === "bearTrap"
+      currentZone
+        ? this.add.triangle(signal.radius * 0.16, 0, -8, -9, 10, 0, -8, 9, 0xe6f4ce, 0.84)
+        : predictionSigil
+          ? this.add.triangle(-signal.radius * 0.18, 0, 0, -10, 14, 0, 0, 10, 0xfff1d8, signal.markerStyle === "real" ? 0.92 : 0.46)
+        : signal.kind === "bearTrap"
         ? this.add.triangle(-signal.radius * 0.2, 0, 0, -8, 12, 0, 0, 8, 0xf3ead8, 0.86)
         : this.add.rectangle(0, 0, signal.radius * 1.18, 5, 0xe6f4ce, 0.82).setAngle(35);
     const markerB =
-      signal.kind === "bearTrap"
+      currentZone
+        ? this.add.triangle(-signal.radius * 0.16, 0, 8, -9, -10, 0, 8, 9, 0xe6f4ce, 0.62)
+        : predictionSigil
+          ? this.add.triangle(signal.radius * 0.18, 0, 0, -10, -14, 0, 0, 10, 0xfff1d8, signal.markerStyle === "real" ? 0.92 : 0.46)
+        : signal.kind === "bearTrap"
         ? this.add.triangle(signal.radius * 0.2, 0, 0, -8, -12, 0, 0, 8, 0xf3ead8, 0.86)
         : this.add.rectangle(0, 0, signal.radius * 1.18, 5, 0xe6f4ce, 0.82).setAngle(-35);
-    const visual = this.add.container(signal.x, signal.y, [ring, core, markerA, markerB]).setDepth(8).setAlpha(0.6);
+    const visual = this.add.container(signal.x, signal.y, [ring, core, markerA, markerB]).setDepth(8).setAlpha(predictionSigil ? 0.76 : 0.6);
+    if (signal.force) {
+      visual.setRotation(Math.atan2(signal.force.y, signal.force.x));
+    }
 
     this.enemyHazards.push({
       visual,
@@ -2374,7 +2519,23 @@ export class GameScene extends Phaser.Scene {
       hazard.visual.setScale(pulse);
       hazard.visual.setAlpha(armed ? 0.92 : 0.5);
 
+      if (hazard.signal.kind === "predictionSigil") {
+        continue;
+      }
+
       if (!armed || this.playerInvulnRemaining > 0) {
+        continue;
+      }
+
+      if (hazard.signal.kind === "currentZone") {
+        if (Phaser.Math.Distance.Between(this.player.x, this.player.y, hazard.signal.x, hazard.signal.y) <= hazard.signal.radius + 12 && hazard.signal.force) {
+          const force = hazard.signal.force;
+          const currentScale = (force.strength * delta) / 1000;
+          this.player.body.setVelocity(
+            this.player.body.velocity.x + force.x * currentScale,
+            this.player.body.velocity.y + force.y * currentScale
+          );
+        }
         continue;
       }
 
@@ -2434,6 +2595,29 @@ export class GameScene extends Phaser.Scene {
     this.enemyHazards = [];
   }
 
+  private destroyApexCurrentsInChargePath(): void {
+    let destroyed = 0;
+    const collisionRadius = this.currentEncounter.enemySize * 0.58;
+    for (let index = this.enemyHazards.length - 1; index >= 0; index -= 1) {
+      const hazard = this.enemyHazards[index];
+      if (!hazard || hazard.signal.kind !== "currentZone") {
+        continue;
+      }
+
+      if (Phaser.Math.Distance.Between(this.enemy.x, this.enemy.y, hazard.signal.x, hazard.signal.y) > collisionRadius + hazard.signal.radius) {
+        continue;
+      }
+
+      hazard.visual.destroy();
+      this.enemyHazards.splice(index, 1);
+      destroyed += 1;
+    }
+
+    if (destroyed > 0) {
+      this.pushFeedback("The Apex tears through its own current.", 0x67c5dc);
+    }
+  }
+
   private updateAttackWindow(): void {
     if (!this.activeAttack || !this.activeAttackVisual) {
       return;
@@ -2482,6 +2666,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.syncAttackVisual(this.enemyAttackVisual, this.enemy.x, this.enemy.y, this.enemyActiveAttack);
+
+    if (this.enemy instanceof BossEnemy && this.enemy.isMomentumCharge(this.enemyActiveAttack)) {
+      this.destroyApexCurrentsInChargePath();
+    }
 
     if (
       this.activeAttack?.profile.shape === "sweep" &&
@@ -2562,6 +2750,8 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.thrustStreak = 0;
+    this.rollingEdgeStacks = 0;
+    this.commandingEdgeSweepCount = 0;
     this.comboTimerRemaining = 0;
     this.resetCombo();
     this.pushFeedback(feedback, COLORS.subtext);
@@ -2576,6 +2766,8 @@ export class GameScene extends Phaser.Scene {
     bleedDamage: number;
     bleedDurationMs: number;
     measured: boolean;
+    perfectMeasure: boolean;
+    clean: boolean;
     initiative: boolean;
     cause: string;
     feedbackColor: number;
@@ -2585,7 +2777,6 @@ export class GameScene extends Phaser.Scene {
     const enemyHealth = this.enemy.health;
     const enemyDefinition = getEnemyDefinition(this.currentEncounter.enemyId);
     const bossEncounter = Boolean(this.currentEncounter.bossId);
-    const longComboBossResistance = bossEncounter && this.comboCount >= 5;
     const thrustLine = signal.profile.shape === "thrust";
     let damage = signal.profile.damage;
     let impact: HitImpactProfile = {
@@ -2605,6 +2796,8 @@ export class GameScene extends Phaser.Scene {
     const measureTolerance = baseMeasureTolerance + (bossEncounter && thrustLine ? 12 : 0);
     const measureError = Math.abs(distance - idealDistance);
     const measured = measureError <= measureTolerance;
+    const perfectMeasure = measured && measureError <= Math.max(6, measureTolerance * 0.45);
+    const clean = distance >= idealDistance * 0.48;
     const initiative = enemyState.phase === "windup" || enemyState.phase === "recovery";
 
     if (measured) {
@@ -2619,7 +2812,7 @@ export class GameScene extends Phaser.Scene {
       };
       cause = "Measured strike";
       feedbackColor = COLORS.success;
-    } else if (distance < idealDistance * 0.48) {
+    } else if (!clean) {
       damage = Math.max(1, damage - 2);
       cause = "Too close";
       feedbackColor = COLORS.danger;
@@ -2673,6 +2866,24 @@ export class GameScene extends Phaser.Scene {
       damage += this.thrustStreak * techniques.thrustStreakDamageStep;
     }
 
+    if (
+      signal.profile.shape === "sweep" &&
+      clean &&
+      techniques.commandingEdgeEvery &&
+      this.commandingEdgeSweepCount + 1 >= techniques.commandingEdgeEvery
+    ) {
+      const impactMultiplier = techniques.commandingEdgeImpactMultiplier ?? 1;
+      impact = {
+        ...impact,
+        displacement: Math.round(impact.displacement * impactMultiplier),
+        controlLossMs: Math.round(impact.controlLossMs * impactMultiplier),
+        interruptChance: Math.min(0.98, impact.interruptChance + 0.12)
+      };
+      signal.weaponTechniqueProc = "commandingEdge";
+      cause = "Commanding Edge";
+      feedbackColor = 0xf5cd86;
+    }
+
     if (bossEncounter && thrustLine) {
       impact = {
         ...impact,
@@ -2708,6 +2919,47 @@ export class GameScene extends Phaser.Scene {
       feedbackColor = COLORS.danger;
     }
 
+    if (signal.kind === "heavy" && enemyState.isStunned && techniques.headsmanDamageMultiplier) {
+      damage = Math.round(damage * techniques.headsmanDamageMultiplier);
+      cause = "Headsman's opening";
+      feedbackColor = 0xd47b59;
+    }
+
+    if (enemyState.isStunned && techniques.sentenceDamageMultiplier) {
+      damage = Math.round(damage * techniques.sentenceDamageMultiplier);
+      impact = {
+        ...impact,
+        hitstopMs: Math.max(impact.hitstopMs, techniques.sentenceHitstopMs ?? 0),
+        cameraShake: Math.max(impact.cameraShake, 0.0048)
+      };
+      signal.weaponTechniqueProc = "sentence";
+      cause = "Sentence";
+      feedbackColor = 0xe5b18a;
+    }
+
+    if (signal.kind === "heavy" && signal.fullyCharged && techniques.sunderingImpactMultiplier) {
+      impact = {
+        ...impact,
+        displacement: Math.round(impact.displacement * techniques.sunderingImpactMultiplier),
+        controlLossMs: Math.round(impact.controlLossMs * techniques.sunderingImpactMultiplier),
+        interruptChance: Math.min(0.98, impact.interruptChance + 0.16)
+      };
+      if (enemyState.guardRemaining > 0 && techniques.sunderingGuardBreakStunMs) {
+        this.enemy.breakGuard(techniques.sunderingGuardBreakStunMs);
+        signal.weaponTechniqueProc = "sundering";
+        cause = "Sundering guard";
+        feedbackColor = 0xe2a06e;
+      }
+    }
+
+    if (signal.kind === "heavy" && techniques.crushingFollowthroughImpactMultiplier) {
+      impact = {
+        ...impact,
+        displacement: Math.round(impact.displacement * techniques.crushingFollowthroughImpactMultiplier),
+        controlLossMs: Math.round(impact.controlLossMs * techniques.crushingFollowthroughImpactMultiplier)
+      };
+    }
+
     if (techniques.criticalChanceBonus && Math.random() < techniques.criticalChanceBonus + (measured ? 0.04 : 0)) {
       damage = Math.round(damage * (techniques.criticalDamageMultiplier ?? 1.4));
       cause = measured ? "Critical measure" : "Critical strike";
@@ -2715,11 +2967,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     damage = Math.max(1, Math.round(damage * this.getArmorDamageScale(this.currentEncounter.armor, signal)));
-
-    // Bosses still reward clean openings, but sixth-hit-and-beyond strings should not melt phases.
-    if (longComboBossResistance) {
-      damage = Math.max(1, Math.round(damage * 0.25));
-    }
 
     if (this.hasTraining("measuredApproach") && measured) {
       impact = {
@@ -2737,7 +2984,7 @@ export class GameScene extends Phaser.Scene {
 
     if (techniques.bleedOnHitDamage && techniques.bleedOnHitDurationMs) {
       const bleedStacks = Math.max(0, this.comboCount - 1) * (techniques.bleedStackStep ?? 0);
-      bleedDamage += techniques.bleedOnHitDamage + Math.round(bleedStacks * (longComboBossResistance ? 0.25 : 1));
+      bleedDamage += techniques.bleedOnHitDamage + Math.round(bleedStacks);
       bleedDurationMs = Math.max(bleedDurationMs, techniques.bleedOnHitDurationMs);
     }
 
@@ -2748,6 +2995,18 @@ export class GameScene extends Phaser.Scene {
       if (cause === "Clean hit") {
         cause = "Burning strike";
         feedbackColor = 0xe38857;
+      }
+    }
+
+    if (this.tizonaFlameRemaining > 0 && techniques.tizonaBurnDurationMs) {
+      bleedDamage +=
+        (techniques.tizonaBurnBaseDamage ?? 0) +
+        this.tizonaFlameCleanHits * (techniques.tizonaBurnCleanHitStep ?? 0) +
+        (measured ? 1 : 0);
+      bleedDurationMs = Math.max(bleedDurationMs, techniques.tizonaBurnDurationMs);
+      if (clean) {
+        cause = "Flame through the line";
+        feedbackColor = 0xffa45c;
       }
     }
 
@@ -2766,6 +3025,17 @@ export class GameScene extends Phaser.Scene {
       slowDurationMs = Math.max(slowDurationMs, this.currentStats.onHitSlowDurationMs);
     }
 
+    if (this.enemy instanceof BossEnemy) {
+      const dominionStrike = this.comboCount >= 5;
+      const resolveResult = this.enemy.resolveIncomingPressure(damage, impact, dominionStrike, signal.kind === "heavy");
+      damage = resolveResult.damage;
+      impact = resolveResult.impact;
+      if (resolveResult.resolvePercent >= 45 && cause === "Clean hit") {
+        cause = dominionStrike ? "Dominion pierces Resolve" : "Boss Resolve hardens";
+        feedbackColor = dominionStrike ? COLORS.gold : COLORS.subtext;
+      }
+    }
+
     return {
       damage,
       impact,
@@ -2775,22 +3045,44 @@ export class GameScene extends Phaser.Scene {
       bleedDamage,
       bleedDurationMs,
       measured,
+      perfectMeasure,
+      clean,
       initiative,
       cause,
       feedbackColor
     };
   }
 
+  private isPlayerMovingTowardEnemy(): boolean {
+    const velocity = this.player.body.velocity;
+    const speed = velocity.length();
+    if (speed < 44) {
+      return false;
+    }
+
+    const towardEnemy = new Phaser.Math.Vector2(this.enemy.x - this.player.x, this.enemy.y - this.player.y);
+    if (towardEnemy.lengthSq() < 1) {
+      return false;
+    }
+
+    towardEnemy.normalize();
+    return new Phaser.Math.Vector2(velocity.x, velocity.y).normalize().dot(towardEnemy) > 0.28;
+  }
+
   private onPlayerHitResolved(
     signal: AttackExecutionSignal,
     resolvedHit: {
       measured: boolean;
+      perfectMeasure: boolean;
+      clean: boolean;
       initiative: boolean;
     }
   ): void {
     const techniques = this.currentStats.sword.techniques;
+    const movingTowardEnemy = this.isPlayerMovingTowardEnemy();
+    const commandingFlowBonus = signal.weaponTechniqueProc === "commandingEdge" ? (techniques.commandingEdgeFlowBonus ?? 0) : 0;
 
-    this.registerComboHit();
+    this.registerComboHit(commandingFlowBonus);
     this.firstBloodAvailable = false;
     this.lastSuccessfulAttackKind = signal.kind;
     this.lastSuccessfulAttackShape = signal.profile.shape;
@@ -2868,10 +3160,72 @@ export class GameScene extends Phaser.Scene {
       this.controller.scaleCurrentRecovery(techniques.heavyHitRecoveryScale);
     }
 
+    if (resolvedHit.clean && techniques.ruthlessTempoStaminaDiscount) {
+      this.controller.applyNextAttackStaminaDiscount(techniques.ruthlessTempoStaminaDiscount);
+    }
+
+    if (signal.kind === "heavy" && resolvedHit.clean && comboMode.tier >= 2 && techniques.noRespiteHeavyRecoveryScale) {
+      this.controller.scaleCurrentRecovery(techniques.noRespiteHeavyRecoveryScale);
+    }
+
+    if (signal.profile.shape === "sweep") {
+      if (resolvedHit.clean) {
+        this.rollingEdgeStacks = Math.min(techniques.rollingEdgeMaxStacks ?? 0, this.rollingEdgeStacks + 1);
+        if (this.rollingEdgeStacks > 0 && techniques.rollingEdgeRecoveryScalePerHit) {
+          this.controller.scaleCurrentRecovery(Math.max(0.65, 1 - this.rollingEdgeStacks * techniques.rollingEdgeRecoveryScalePerHit));
+        }
+        if (techniques.commandingEdgeEvery) {
+          this.commandingEdgeSweepCount = signal.weaponTechniqueProc === "commandingEdge"
+            ? 0
+            : Math.min(techniques.commandingEdgeEvery - 1, this.commandingEdgeSweepCount + 1);
+        }
+      } else {
+        this.rollingEdgeStacks = 0;
+        this.commandingEdgeSweepCount = 0;
+      }
+    } else if (techniques.rollingEdgeRecoveryScalePerHit) {
+      this.rollingEdgeStacks = 0;
+    }
+
+    if (resolvedHit.clean && signal.profile.shape === "sweep" && movingTowardEnemy && techniques.passingCutMoveMultiplier && techniques.passingCutMoveDurationMs) {
+      this.controller.applyMoveBoost(techniques.passingCutMoveMultiplier, techniques.passingCutMoveDurationMs);
+    }
+
+    if (resolvedHit.clean && resolvedHit.measured && techniques.pursuitMoveMultiplier && techniques.pursuitMoveDurationMs) {
+      this.controller.applyMoveBoost(techniques.pursuitMoveMultiplier, techniques.pursuitMoveDurationMs);
+    }
+
+    if (resolvedHit.clean && movingTowardEnemy && techniques.boardingStepStaminaRefund) {
+      this.controller.refundStamina(techniques.boardingStepStaminaRefund);
+    }
+
+    if (resolvedHit.clean && movingTowardEnemy && techniques.forwardPressureRecoveryScale) {
+      this.controller.scaleCurrentRecovery(techniques.forwardPressureRecoveryScale);
+    }
+
+    if (resolvedHit.perfectMeasure && techniques.longReachFlowBonus) {
+      this.registerComboHit(techniques.longReachFlowBonus);
+      this.pushFeedback("Long Reach — Flow", 0xc4d9c7);
+    }
+
+    if (resolvedHit.perfectMeasure && techniques.vorWindowMs) {
+      this.vorAttackRemaining = techniques.vorWindowMs;
+      this.pushFeedback("Vor ready", 0xe5f6d6);
+    }
+
+    if (resolvedHit.clean && techniques.relentlessMoveStep && techniques.relentlessMaxStacks && techniques.relentlessDurationMs) {
+      this.relentlessStacks = Math.min(techniques.relentlessMaxStacks, this.relentlessStacks + 1);
+      this.controller.applyMoveBoost(1 + this.relentlessStacks * techniques.relentlessMoveStep, techniques.relentlessDurationMs);
+    }
+
+    if (this.tizonaFlameRemaining > 0 && resolvedHit.clean) {
+      this.tizonaFlameCleanHits = Math.min(techniques.tizonaFlameMaxCleanHitStacks ?? 0, this.tizonaFlameCleanHits + 1);
+    }
+
     this.recentDashAttackWindowRemaining = 0;
   }
 
-  private applyBindRewards(perfectBind: boolean): void {
+  private applyBindRewards(perfectBind: boolean, followupType: BindFollowupType): void {
     const techniques = this.currentStats.sword.techniques;
     const comboMode = this.getCurrentComboMode();
 
@@ -2888,8 +3242,25 @@ export class GameScene extends Phaser.Scene {
 
     this.controller.refundStamina(perfectBind ? 12 : 8);
 
+    if (followupType === "defensive" && techniques.redirectionWindowMs) {
+      this.redirectionSweepRemaining = techniques.redirectionWindowMs;
+    }
+
+    if (followupType === "offensive" && techniques.noQuarterOffensiveBindRefund && techniques.noQuarterWindowMs) {
+      this.controller.refundStamina(techniques.noQuarterOffensiveBindRefund);
+      this.noQuarterHeavyRemaining = techniques.noQuarterWindowMs;
+    }
+
+    if (followupType === "standard" && techniques.countercutWindowMs) {
+      this.countercutLightRemaining = techniques.countercutWindowMs;
+    }
+
     if (!perfectBind) {
       return;
+    }
+
+    if (techniques.indesWindowMs) {
+      this.indesAttackRemaining = techniques.indesWindowMs;
     }
 
     if (this.currentStats.perfectBindStaminaRestoreBonus > 0) {
@@ -2916,14 +3287,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   private consumeJudgment(signal: AttackExecutionSignal, stacks: number): void {
-    const damage = 8 + stacks * stacks * 5;
-    const impact: HitImpactProfile = {
+    let damage = 8 + stacks * stacks * 5;
+    let impact: HitImpactProfile = {
       displacement: 18 + stacks * 5,
       controlLossMs: 36 + stacks * 10,
       interruptChance: 0.42 + stacks * 0.08,
       hitstopMs: 22 + stacks * 4,
       cameraShake: 0.0015 + stacks * 0.00035
     };
+    if (this.enemy instanceof BossEnemy) {
+      const resolveResult = this.enemy.resolveIncomingPressure(damage, impact, true, true);
+      damage = resolveResult.damage;
+      impact = resolveResult.impact;
+    }
     const holyProfile: AttackExecutionSignal = {
       ...signal,
       profile: { ...signal.profile, range: signal.profile.range * 1.65, width: signal.profile.width * 1.9, tint: 0xffe9a6 }
@@ -2980,6 +3356,11 @@ export class GameScene extends Phaser.Scene {
     if (signal.kind === "heavy" && techniques.heavyArmorPierceRatio) {
       const heavyPierceRatio = Phaser.Math.Clamp(techniques.heavyArmorPierceRatio, 0, 0.85);
       scale = Phaser.Math.Linear(scale, 1, heavyPierceRatio);
+    }
+
+    if (signal.kind === "heavy" && signal.fullyCharged && techniques.sunderingArmorPierceRatio) {
+      const target = armor === "heavy" ? 1.08 : armor === "light" ? 1.04 : 1;
+      scale = Phaser.Math.Linear(scale, target, Phaser.Math.Clamp(techniques.sunderingArmorPierceRatio, 0, 0.85));
     }
 
     if (signal.guardEmpowerment === "ox" && thrust) {
@@ -3548,6 +3929,10 @@ export class GameScene extends Phaser.Scene {
 
       if (status.isParrying || status.isGuarding) {
         this.playerWeaponSprite.setTint(status.isParrying ? COLORS.gold : this.getGuardAccent(status.guardType));
+      } else if (this.currentStats.sword.id === "tizona") {
+        this.playerWeaponSprite.setTint(this.tizonaFlameRemaining > 0 ? 0xff8b42 : 0xe8a06a);
+      } else if (this.currentStats.sword.id === "colada") {
+        this.playerWeaponSprite.setTint(0xf2dfaf);
       } else {
         this.playerWeaponSprite.clearTint();
       }
@@ -3570,6 +3955,38 @@ export class GameScene extends Phaser.Scene {
     this.player.setFillStyle(bodyTint);
   }
 
+  private triggerForceOfWill(direction: { x: number; y: number }, impact: HitImpactProfile): void {
+    const techniques = this.currentStats.sword.techniques;
+    this.coladaWillSpent = true;
+    this.playerHp = 1;
+    gameManager.recordPlayerDamaged();
+    this.controller.cleanseNegativeStates();
+    this.playerInvulnRemaining = techniques.forceOfWillInvulnerabilityMs ?? WEAPON_TECH_TUNING.legendary.colada.invulnerabilityMs;
+    this.controller.applyMoveBoost(
+      techniques.forceOfWillMoveMultiplier ?? WEAPON_TECH_TUNING.legendary.colada.moveMultiplier,
+      techniques.forceOfWillMoveDurationMs ?? WEAPON_TECH_TUNING.legendary.colada.moveDurationMs
+    );
+    this.comboTimerRemaining = 0;
+    this.postBindRewardRemaining = 0;
+    this.nextAttackBonusDamage = 0;
+    this.postBindThrustCharges = 0;
+    this.thrustStreak = 0;
+    this.relentlessStacks = 0;
+    if (techniques.relentlessMoveStep) {
+      this.controller.clearMoveBoost();
+    }
+    this.pendingBindDecision = null;
+    this.clearFoolState();
+    this.resetCombo();
+    this.player.body.setVelocity(direction.x * impact.displacement * 0.36, direction.y * impact.displacement * 0.36);
+    const halo = this.add.circle(this.player.x, this.player.y, 22, 0xffedb1, 0.28).setStrokeStyle(2, 0xffffff, 0.72).setDepth(10);
+    this.tweens.add({ targets: halo, scale: 3.2, alpha: 0, duration: 360, ease: "Sine.out", onComplete: () => halo.destroy() });
+    this.player.setFillStyle(0xfff1bf);
+    this.tweens.add({ targets: this.player, alpha: 0.52, duration: 110, yoyo: true, repeat: 2, onComplete: () => this.player.setFillStyle(this.currentStats.sword.accent).setAlpha(1) });
+    this.cameras.main.shake(110, 0.004);
+    this.pushFeedback("Force of Will — still standing", 0xffecb0);
+  }
+
   private damagePlayer(amount: number, direction: { x: number; y: number }, impact: HitImpactProfile): void {
     if (this.combatLocked || this.playerInvulnRemaining > 0) {
       return;
@@ -3582,6 +3999,10 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    if (this.enemy instanceof BossEnemy) {
+      this.enemy.noteRegainedInitiative();
+    }
+
     const tradingHeavy =
       this.currentStats.sword.techniques.heavyCannotBeInterrupted &&
       this.controller.isCurrentAttackHeavy() &&
@@ -3591,21 +4012,49 @@ export class GameScene extends Phaser.Scene {
     const guardScale = this.guardDamageScalePending;
     this.guardDamageScalePending = 1;
     const scaledDamage = Math.max(1, Math.round(amount * this.currentStats.incomingDamageScale * guardScale));
+    const techniques = this.currentStats.sword.techniques;
+    const campaignerPreservesFlow =
+      !this.campaignerUsed &&
+      this.comboCount > 0 &&
+      Boolean(techniques.campaignerFlowWindowMs);
+
+    if (
+      scaledDamage + lowStaminaPunish >= this.playerHp &&
+      !this.coladaWillSpent &&
+      techniques.forceOfWillInvulnerabilityMs
+    ) {
+      this.triggerForceOfWill(direction, impact);
+      return;
+    }
 
     this.playerHp = Math.max(0, this.playerHp - scaledDamage - lowStaminaPunish);
     gameManager.recordPlayerDamaged();
     this.playerInvulnRemaining = 260;
-    this.comboTimerRemaining = 0;
+    this.comboTimerRemaining = campaignerPreservesFlow ? Math.max(this.comboTimerRemaining, techniques.campaignerFlowWindowMs ?? 0) : 0;
     this.postBindRewardRemaining = 0;
     this.nextAttackBonusDamage = 0;
     this.postBindThrustCharges = 0;
     this.thrustStreak = 0;
+    this.relentlessStacks = 0;
+    if (techniques.relentlessMoveStep) {
+      this.controller.clearMoveBoost();
+    }
     this.pendingBindDecision = null;
     this.plowBindImpactRemaining = 0;
     this.dayStrikeRemaining = 0;
     this.oxStrikeRemaining = 0;
+    this.redirectionSweepRemaining = 0;
+    this.noQuarterHeavyRemaining = 0;
+    this.countercutLightRemaining = 0;
+    this.indesAttackRemaining = 0;
+    this.vorAttackRemaining = 0;
     this.clearFoolState();
-    this.resetCombo();
+    if (campaignerPreservesFlow) {
+      this.campaignerUsed = true;
+      this.pushFeedback("Campaigner holds Flow", 0xc69a78);
+    } else {
+      this.resetCombo();
+    }
     this.player.body.setVelocity(
       direction.x * impact.displacement * (tradingHeavy ? 0.3 : 0.82),
       direction.y * impact.displacement * (tradingHeavy ? 0.3 : 0.82)
@@ -3619,8 +4068,8 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.shake(120, Math.max(0.0036, impact.cameraShake));
     this.applyHitStop(Math.round(impact.hitstopMs * 0.72));
     this.pushFeedback(
-      lowStaminaPunish > 0 ? "Winded and punished" : guardScale < 1 ? "Guard softened the blow" : "Hit out of line",
-      guardScale < 1 && lowStaminaPunish <= 0 ? COLORS.gold : COLORS.danger
+      lowStaminaPunish > 0 ? "Winded and punished" : campaignerPreservesFlow ? "Campaigner holds Flow" : guardScale < 1 ? "Guard softened the blow" : "Hit out of line",
+      campaignerPreservesFlow || (guardScale < 1 && lowStaminaPunish <= 0) ? COLORS.gold : COLORS.danger
     );
 
     if (this.playerHp === 0) {
@@ -3628,9 +4077,9 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private registerComboHit(): void {
+  private registerComboHit(extraContribution = 0): void {
     const previousMode = this.getCurrentComboMode().label;
-    this.comboCount += 1;
+    this.comboCount += 1 + Math.max(0, extraContribution);
     this.comboTimerRemaining = this.currentStats.comboWindow;
     this.bestCombo = Math.max(this.bestCombo, this.comboCount);
     const nextMode = this.getCurrentComboMode().label;
@@ -3657,6 +4106,12 @@ export class GameScene extends Phaser.Scene {
 
   private resetCombo(): void {
     this.comboCount = 0;
+    this.rollingEdgeStacks = 0;
+    this.commandingEdgeSweepCount = 0;
+    this.relentlessStacks = 0;
+    if (this.currentStats?.sword.techniques.relentlessMoveStep) {
+      this.controller.clearMoveBoost();
+    }
     this.endDivinityJudgment();
   }
 
@@ -4055,11 +4510,17 @@ export class GameScene extends Phaser.Scene {
     const comboLabel = this.comboCount > 1 ? `x${this.comboCount}` : "none";
     const bindReady = status.parryCooldownRemaining <= 0 ? "ready" : `${(status.parryCooldownRemaining / 1000).toFixed(2)}s`;
     const abilityText = this.currentStats.sword.techniques.activeAbilityName
-      ? this.excaliburAbilityCooldownRemaining <= 0
+      ? this.legendaryAbilityCooldownRemaining <= 0
         ? "ready"
-        : `${(this.excaliburAbilityCooldownRemaining / 1000).toFixed(1)}s`
+        : `${(this.legendaryAbilityCooldownRemaining / 1000).toFixed(1)}s`
       : null;
-    const judgmentText = this.judgmentActive ? `  Judgment ${this.judgmentStacks}/5` : "";
+    const legendaryStateText = this.judgmentActive
+      ? `  Judgment ${this.judgmentStacks}/5`
+      : this.tizonaFlameRemaining > 0
+        ? `  Flame ${(this.tizonaFlameRemaining / 1000).toFixed(1)}s · ${this.tizonaFlameCleanHits}`
+        : this.currentStats.sword.id === "colada"
+          ? `  Will ${this.coladaWillSpent ? "spent" : "ready"}`
+          : "";
     const staminaText = `${Math.round(status.stamina)}/${Math.round(status.staminaMax)}`;
     const guardName = status.guardType ? `${status.guardType[0].toUpperCase()}${status.guardType.slice(1)}` : "Plow";
     const guardText = status.isGuarding
@@ -4087,7 +4548,7 @@ export class GameScene extends Phaser.Scene {
         this.currentStats.sword.name,
         `HP ${this.playerHp}/${this.playerMaxHp}  Stamina ${staminaText}`,
         `Chain ${comboLabel}  ${this.formatInventoryInline(state.materials)}`,
-        `Dash ${dashText}  Bind ${bindReady}${abilityText ? `  F ${abilityText}` : ""}${judgmentText}`,
+        `Dash ${dashText}  Bind ${bindReady}${abilityText ? `  F ${abilityText}` : ""}${legendaryStateText}`,
         `${guardText}${bindDecisionText}`
       ].join("\n")
     );
@@ -4108,6 +4569,7 @@ export class GameScene extends Phaser.Scene {
           ? [
               `${this.currentEncounter.bossName ?? this.enemy.weaponName}`,
               `HP ${enemyHealth.current}/${enemyHealth.max}  Armor ${this.formatArmorLabel(this.currentEncounter.armor)}`,
+              `Resolve ${this.enemy instanceof BossEnemy ? this.enemy.getResolvePercent() : 0}%`,
               this.currentEncounter.bossLesson ? `Lesson ${this.currentEncounter.bossLesson}` : bossReward ? `Reward ${bossReward.name}` : "Boss encounter"
             ].join("\n")
           : [
@@ -4144,14 +4606,20 @@ export class GameScene extends Phaser.Scene {
     if (phase !== this.lastBossPhaseSeen) {
       this.lastBossPhaseSeen = phase;
 
-      if (phase === 2) {
-        this.pushFeedback(`${this.currentEncounter.bossName ?? this.enemy.weaponName} surges into Phase 2.`, COLORS.danger);
+      if (phase >= 3) {
+        this.clearEnemyHazards();
+        this.clearEnemyProjectiles();
+        this.cameras.main.shake(160, 0.0048);
+        this.pushFeedback(`${this.currentEncounter.bossName ?? this.enemy.weaponName} enters the final exam.`, COLORS.danger);
+      } else if (phase === 2) {
+        this.cameras.main.shake(110, 0.0032);
+        this.pushFeedback(`${this.currentEncounter.bossName ?? this.enemy.weaponName} complicates the lesson.`, COLORS.danger);
       }
     }
 
     const ratio = Phaser.Math.Clamp(phaseHealth.current / Math.max(1, phaseHealth.max), 0, 1);
     const fullWidth = 442;
     this.bossBarFill.setDisplaySize(Math.max(0, fullWidth * ratio), 12);
-    this.bossBarLabel.setText(this.enemy.getBossLabel());
+    this.bossBarLabel.setText(`${this.enemy.getBossLabel()}  Resolve ${this.enemy.getResolvePercent()}%`);
   }
 }

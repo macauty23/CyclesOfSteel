@@ -9,6 +9,7 @@ import type {
   SwordTechniqueProfile,
   SwordTradeoffRatings
 } from "../core/types";
+import { WEAPON_TECH_TUNING } from "./weaponTechTuning";
 
 type LegacyAttackProfile = Partial<AttackProfile> & {
   knockback?: number;
@@ -125,6 +126,8 @@ function inferAffinity(id: SwordId): SwordAffinity {
     case "mastersRapier":
     case "needleblade":
     case "pappenheimerRapier":
+    case "tizona":
+    case "colada":
       return "measure";
     case "broadArmingSword":
     case "falchion":
@@ -133,6 +136,11 @@ function inferAffinity(id: SwordId): SwordAffinity {
     case "hangerSword":
     case "navalCutlass":
     case "dusack":
+    case "steelDusack":
+    case "mastersDusack":
+    case "officersCutlass":
+    case "executionFalchion":
+    case "warFalchion":
       return "edge";
     case "messer":
     case "hauswehr":
@@ -140,6 +148,14 @@ function inferAffinity(id: SwordId): SwordAffinity {
     case "grossesMesser":
     case "langesMesser":
     case "twoHandedMesser":
+    case "heavyKriegsmesser":
+    case "executionMesser":
+    case "warMesser":
+    case "feldmesser":
+    case "landsknechtMesser":
+    case "fechtmesser":
+    case "longFechtmesser":
+    case "mastersMesser":
       return "rogue";
     case "estoc":
     case "twoHandedEstoc":
@@ -1911,6 +1927,109 @@ const pappenheimerRapier = forgeSword(mastersRapier, {
   }
 });
 
+const tizona = forgeSword(needleblade, {
+  id: "tizona",
+  name: "Tizona",
+  epithet: "Force of Flame",
+  accent: 0xf08b43,
+  maxHp: 104,
+  summary: "A legendary dueling point that turns exact offense into a rising furnace without surrendering its needle-thrust identity.",
+  lightSummary: "Ember Probe: a quick thrust that builds the heat only clean measure can sustain.",
+  heavySummary: "Firebrand Lunge: a blazing committed point that rewards Dominion with a fierce burn.",
+  moveSpeed: 238,
+  moveAcceleration: 1880,
+  dashSpeed: 804,
+  dashCooldown: 284,
+  bladeLength: 98,
+  bladeWidth: 5,
+  guardSize: 23,
+  lightAttack: {
+    name: "Ember Probe",
+    damage: 20,
+    range: 180,
+    width: 13,
+    windup: 44,
+    recovery: 82,
+    tint: 0xffbd6d
+  },
+  heavyAttack: {
+    name: "Firebrand Lunge",
+    damage: 34,
+    range: 232,
+    width: 17,
+    windup: 96,
+    recovery: 138,
+    lunge: 420,
+    tint: 0xff8d49
+  },
+  techniques: {
+    identity: "Legendary precision set aflame.",
+    traitPrimary: "Force of Flame",
+    traitSecondary: "Clean fire",
+    activeAbilityName: "Force of Flame",
+    activeAbilityCooldownMs: WEAPON_TECH_TUNING.legendary.tizona.cooldownMs,
+    criticalChanceBonus: 0.18,
+    criticalDamageMultiplier: 1.55,
+    thrustStreakDamageStep: 2,
+    thrustStreakMaxStacks: 5,
+    tizonaFlameDurationMs: WEAPON_TECH_TUNING.legendary.tizona.flameDurationMs,
+    tizonaFlameBaseDamageBonus: WEAPON_TECH_TUNING.legendary.tizona.baseDamageBonus,
+    tizonaFlameCleanHitDamageStep: WEAPON_TECH_TUNING.legendary.tizona.cleanHitDamageStep,
+    tizonaFlameMaxCleanHitStacks: WEAPON_TECH_TUNING.legendary.tizona.maxCleanHitStacks,
+    tizonaFlameFlowDamageBonus: WEAPON_TECH_TUNING.legendary.tizona.flowDamageBonus,
+    tizonaFlameDominionDamageBonus: WEAPON_TECH_TUNING.legendary.tizona.dominionDamageBonus,
+    tizonaBurnBaseDamage: WEAPON_TECH_TUNING.legendary.tizona.burnBaseDamage,
+    tizonaBurnCleanHitStep: WEAPON_TECH_TUNING.legendary.tizona.burnCleanHitStep,
+    tizonaBurnDurationMs: WEAPON_TECH_TUNING.legendary.tizona.burnDurationMs
+  }
+});
+
+const colada = forgeSword(pappenheimerRapier, {
+  id: "colada",
+  name: "Colada",
+  epithet: "Force of Will",
+  accent: 0xe8d8ad,
+  maxHp: 110,
+  summary: "An elegant legendary rapier whose resolve turns one killing blow per battle into a final, miraculous opening.",
+  lightSummary: "Resolve Probe: a restrained thrust that keeps the line honest.",
+  heavySummary: "Last Word: a composed counter-lunge that remains exact under pressure.",
+  moveSpeed: 226,
+  moveAcceleration: 1800,
+  dashSpeed: 774,
+  dashCooldown: 294,
+  bladeLength: 96,
+  bladeWidth: 5,
+  guardSize: 28,
+  lightAttack: {
+    name: "Resolve Probe",
+    damage: 21,
+    range: 172,
+    width: 15,
+    recovery: 84,
+    tint: 0xf4ead0
+  },
+  heavyAttack: {
+    name: "Last Word",
+    damage: 35,
+    range: 222,
+    width: 18,
+    windup: 94,
+    recovery: 140,
+    lunge: 400,
+    tint: 0xfff4d5
+  },
+  techniques: {
+    identity: "Miraculous restraint under pressure.",
+    traitPrimary: "Force of Will",
+    traitSecondary: "Last stand",
+    postBindGuardDamageScale: 0.62,
+    nextAttackAfterBindBonus: 14,
+    forceOfWillInvulnerabilityMs: WEAPON_TECH_TUNING.legendary.colada.invulnerabilityMs,
+    forceOfWillMoveMultiplier: WEAPON_TECH_TUNING.legendary.colada.moveMultiplier,
+    forceOfWillMoveDurationMs: WEAPON_TECH_TUNING.legendary.colada.moveDurationMs
+  }
+});
+
 const estoc = forgeSword(thrustArmingSword, {
   id: "estoc",
   name: "Estoc",
@@ -2395,10 +2514,67 @@ const dusack = forgeSword(falchion, {
   },
   techniques: {
     identity: "Fast broad-blade instruction.",
-    traitPrimary: "Training Weapon",
+    traitPrimary: "Rolling Edge",
     traitSecondary: "Flowing Cuts",
-    lightHitRecoveryScale: 0.82,
-    heavyHitRecoveryScale: 0.88
+    rollingEdgeRecoveryScalePerHit: WEAPON_TECH_TUNING.broad.rollingEdge.recoveryScalePerHit,
+    rollingEdgeMaxStacks: WEAPON_TECH_TUNING.broad.rollingEdge.maxStacks
+  }
+});
+
+const steelDusack = forgeSword(dusack, {
+  id: "steelDusack",
+  name: "Steel Dusack",
+  epithet: "Passing cut",
+  accent: 0xd8a66a,
+  maxHp: 120,
+  summary: "A hardened dusack that turns a clean moving sweep into a brief burst of footwork.",
+  lightSummary: "Passing Lesson: a quick sweep that carries its wielder through the line.",
+  heavySummary: "Steel Hew: a disciplined follow-through that keeps the cut compact.",
+  moveSpeed: 204,
+  moveAcceleration: 1640,
+  dashSpeed: 724,
+  dashCooldown: 326,
+  bladeLength: 82,
+  lightAttack: { name: "Passing Lesson", damage: 25, range: 122, width: 70, recovery: 92, tint: 0xe5b779 },
+  heavyAttack: { name: "Steel Hew", damage: 39, range: 150, width: 86, recovery: 140, tint: 0xf0c58d },
+  techniques: {
+    identity: "Mobile broad-blade instruction.",
+    traitPrimary: "Passing Cut",
+    traitSecondary: "Rolling Edge",
+    rollingEdgeRecoveryScalePerHit: WEAPON_TECH_TUNING.broad.rollingEdge.recoveryScalePerHit,
+    rollingEdgeMaxStacks: WEAPON_TECH_TUNING.broad.rollingEdge.maxStacks,
+    passingCutMoveMultiplier: WEAPON_TECH_TUNING.broad.passingCut.moveMultiplier,
+    passingCutMoveDurationMs: WEAPON_TECH_TUNING.broad.passingCut.durationMs
+  }
+});
+
+const mastersDusack = forgeSword(steelDusack, {
+  id: "mastersDusack",
+  name: "Master's Dusack",
+  epithet: "Redirection",
+  accent: 0xf0cf8c,
+  maxHp: 122,
+  summary: "A masterful broad trainer that redirects a Defensive Bind into one long, forceful answering sweep.",
+  lightSummary: "Redirecting Cut: a quick sweep that steals the line back.",
+  heavySummary: "Master's Lesson: a poised hew with uncommon reach after a defensive bind.",
+  moveSpeed: 208,
+  moveAcceleration: 1680,
+  dashSpeed: 738,
+  dashCooldown: 316,
+  bladeLength: 86,
+  lightAttack: { name: "Redirecting Cut", damage: 26, range: 128, width: 72, recovery: 90, tint: 0xf3d49c },
+  heavyAttack: { name: "Master's Lesson", damage: 41, range: 156, width: 90, recovery: 138, tint: 0xffdfaa },
+  techniques: {
+    identity: "Defensive redirection into edge control.",
+    traitPrimary: "Redirection",
+    traitSecondary: "Passing Cut",
+    rollingEdgeRecoveryScalePerHit: WEAPON_TECH_TUNING.broad.rollingEdge.recoveryScalePerHit,
+    rollingEdgeMaxStacks: WEAPON_TECH_TUNING.broad.rollingEdge.maxStacks,
+    passingCutMoveMultiplier: WEAPON_TECH_TUNING.broad.passingCut.moveMultiplier,
+    passingCutMoveDurationMs: WEAPON_TECH_TUNING.broad.passingCut.durationMs,
+    redirectionSweepRangeBonus: WEAPON_TECH_TUNING.broad.redirection.sweepRangeBonus,
+    redirectionImpactMultiplier: WEAPON_TECH_TUNING.broad.redirection.impactMultiplier,
+    redirectionWindowMs: WEAPON_TECH_TUNING.broad.redirection.windowMs
   }
 });
 
@@ -2450,9 +2626,11 @@ const hangerSword = forgeSword(greatFalchion, {
   },
   techniques: {
     identity: "Fast broad finishing pressure.",
-    traitPrimary: "Quick Draw",
+    traitPrimary: "Pursuit",
     traitSecondary: "Cleaver",
-    bonusDamageVsLightArmor: 8
+    bonusDamageVsLightArmor: 8,
+    pursuitMoveMultiplier: WEAPON_TECH_TUNING.broad.pursuit.moveMultiplier,
+    pursuitMoveDurationMs: WEAPON_TECH_TUNING.broad.pursuit.durationMs
   }
 });
 
@@ -2503,11 +2681,94 @@ const navalCutlass = forgeSword(hangerSword, {
   techniques: {
     identity: "Sea-legged close pressure.",
     traitPrimary: "Boarding Rush",
-    traitSecondary: "Sea Legs",
+    traitSecondary: "Boarding Step",
     dashAttackBonus: 8,
     dashRecoveryScale: 0.8,
     hitMoveBoostMultiplier: 1.1,
-    hitMoveBoostDurationMs: 420
+    hitMoveBoostDurationMs: 420,
+    boardingStepStaminaRefund: WEAPON_TECH_TUNING.broad.boardingStep.staminaRefund
+  }
+});
+
+const officersCutlass = forgeSword(navalCutlass, {
+  id: "officersCutlass",
+  name: "Officer's Cutlass",
+  epithet: "Commanding edge",
+  accent: 0xf5cd86,
+  maxHp: 130,
+  summary: "A disciplined boarding blade whose third clean sweep turns pressure into a commanding impact and extra Flow.",
+  lightSummary: "Command Cut: a short arc that rewards a clean cadence.",
+  heavySummary: "Deck Command: a decisive chop that holds the line after the third sweep.",
+  moveSpeed: 202,
+  moveAcceleration: 1600,
+  dashSpeed: 736,
+  dashCooldown: 318,
+  bladeLength: 90,
+  lightAttack: { name: "Command Cut", damage: 31, range: 138, width: 86, recovery: 108, tint: 0xf5c98d },
+  heavyAttack: { name: "Deck Command", damage: 49, range: 166, width: 102, recovery: 160, tint: 0xffdb9e },
+  techniques: {
+    identity: "Cadenced boarding pressure.",
+    traitPrimary: "Commanding Edge",
+    traitSecondary: "Boarding Step",
+    dashAttackBonus: 10,
+    dashRecoveryScale: 0.8,
+    boardingStepStaminaRefund: WEAPON_TECH_TUNING.broad.boardingStep.staminaRefund,
+    commandingEdgeEvery: WEAPON_TECH_TUNING.broad.commandingEdge.every,
+    commandingEdgeImpactMultiplier: WEAPON_TECH_TUNING.broad.commandingEdge.impactMultiplier,
+    commandingEdgeFlowBonus: WEAPON_TECH_TUNING.broad.commandingEdge.flowBonus
+  }
+});
+
+const executionFalchion = forgeSword(greatFalchion, {
+  id: "executionFalchion",
+  name: "Execution Falchion",
+  epithet: "Headsman's edge",
+  accent: 0xd47b59,
+  maxHp: 136,
+  summary: "A final broad blade that holds its damage for staggered, stunned, and guard-broken prey.",
+  lightSummary: "Condemning Sweep: a wide cut that keeps a staggered foe in the lane.",
+  heavySummary: "Headsman's Fall: a punishing execution cleave for a genuinely opened target.",
+  moveSpeed: 178,
+  moveAcceleration: 1380,
+  dashSpeed: 646,
+  dashCooldown: 394,
+  bladeLength: 100,
+  bladeWidth: 11,
+  lightAttack: { name: "Condemning Sweep", damage: 33, range: 150, width: 96, recovery: 136, tint: 0xe39a76 },
+  heavyAttack: { name: "Headsman's Fall", damage: 53, range: 178, width: 112, recovery: 188, tint: 0xf0ad85 },
+  techniques: {
+    identity: "Punish a real opening.",
+    traitPrimary: "Headsman",
+    traitSecondary: "Stagger execution",
+    heavyStunMs: 130,
+    headsmanDamageMultiplier: WEAPON_TECH_TUNING.broad.headsman.damageMultiplier
+  }
+});
+
+const warFalchion = forgeSword(greatFalchion, {
+  id: "warFalchion",
+  name: "War Falchion",
+  epithet: "Sundering edge",
+  accent: 0xc56949,
+  maxHp: 138,
+  summary: "A final broad war blade whose charged heavy cuts break guarded lines and bite into armor.",
+  lightSummary: "War Sweep: a weighty broad cut that establishes the lane.",
+  heavySummary: "Sundering Hew: a charged cleave made to shatter guards rather than farm weak targets.",
+  moveSpeed: 174,
+  moveAcceleration: 1340,
+  dashSpeed: 632,
+  dashCooldown: 408,
+  bladeLength: 102,
+  bladeWidth: 11,
+  lightAttack: { name: "War Sweep", damage: 32, range: 152, width: 98, recovery: 142, tint: 0xd9825f },
+  heavyAttack: { name: "Sundering Hew", damage: 54, range: 182, width: 114, windup: 158, recovery: 194, tint: 0xea9d72 },
+  techniques: {
+    identity: "Charged cleaves against armor and guard.",
+    traitPrimary: "Sundering Edge",
+    traitSecondary: "Guard breaker",
+    sunderingArmorPierceRatio: WEAPON_TECH_TUNING.broad.sundering.armorPierceRatio,
+    sunderingImpactMultiplier: WEAPON_TECH_TUNING.broad.sundering.impactMultiplier,
+    sunderingGuardBreakStunMs: WEAPON_TECH_TUNING.broad.sundering.guardBreakStunMs
   }
 });
 
@@ -2619,10 +2880,11 @@ const messer = forgeSword(hauswehr, {
   },
   techniques: {
     identity: "Compact kriegsmesser preview.",
-    traitPrimary: "Efficiency and Grace",
+    traitPrimary: "Ruthless Tempo",
     traitSecondary: "Street Survivor",
     dashAttackBonus: 8,
-    dashRecoveryScale: 0.84
+    dashRecoveryScale: 0.84,
+    ruthlessTempoStaminaDiscount: WEAPON_TECH_TUNING.messer.ruthlessTempo.staminaDiscount
   }
 });
 
@@ -2669,10 +2931,11 @@ const kriegsmesser = forgeSword(messer, {
   },
   techniques: {
     identity: "Relentless brutality.",
-    traitPrimary: "Fury",
-    traitSecondary: "Relentless",
+    traitPrimary: "No Respite",
+    traitSecondary: "Fury",
     nextAttackAfterBindBonus: 10,
-    heavyHitDashRefund: 150
+    heavyHitDashRefund: 150,
+    noRespiteHeavyRecoveryScale: WEAPON_TECH_TUNING.messer.noRespite.heavyRecoveryScale
   }
 });
 
@@ -2724,11 +2987,12 @@ const grossesMesser = forgeSword(kriegsmesser, {
   },
   techniques: {
     identity: "Heavy cleaving momentum.",
-    traitPrimary: "Heavy Cleave",
+    traitPrimary: "Crushing Followthrough",
     traitSecondary: "Momentum",
     sweepWidthBonus: 14,
     lightHitRecoveryScale: 0.88,
-    heavyHitRecoveryScale: 0.9
+    heavyHitRecoveryScale: 0.9,
+    crushingFollowthroughImpactMultiplier: WEAPON_TECH_TUNING.messer.crushingFollowthrough.impactMultiplier
   }
 });
 
@@ -2781,10 +3045,11 @@ const langesMesser = forgeSword(grossesMesser, {
   },
   techniques: {
     identity: "Long rogue anti-armor pressure.",
-    traitPrimary: "Reach Advantage",
+    traitPrimary: "Long Reach",
     traitSecondary: "Half-Sword",
     armorPierceRatio: 0.24,
-    thrustRangeBonus: 10
+    thrustRangeBonus: 10,
+    longReachFlowBonus: WEAPON_TECH_TUNING.messer.longReach.flowBonus
   }
 });
 
@@ -2834,12 +3099,226 @@ const twoHandedMesser = forgeSword(langesMesser, {
   },
   techniques: {
     identity: "Two-handed rogue brutality.",
-    traitPrimary: "Murder Stroke",
+    traitPrimary: "No Quarter",
     traitSecondary: "Biting Chase",
     armorPierceRatio: 0.3,
     heavyStunMs: 160,
     heavyHitDashRefund: 180,
-    heavyKnockbackMultiplier: 1.18
+    heavyKnockbackMultiplier: 1.18,
+    noQuarterOffensiveBindRefund: WEAPON_TECH_TUNING.messer.noQuarter.offensiveBindRefund,
+    noQuarterNextHeavyDamageMultiplier: WEAPON_TECH_TUNING.messer.noQuarter.nextHeavyDamageMultiplier,
+    noQuarterWindowMs: WEAPON_TECH_TUNING.messer.noQuarter.windowMs
+  }
+});
+
+const heavyKriegsmesser = forgeSword(grossesMesser, {
+  id: "heavyKriegsmesser",
+  name: "Heavy Kriegsmesser",
+  epithet: "Brutal commitment",
+  accent: 0xb7785f,
+  maxHp: 136,
+  summary: "A heavier kriegsmesser whose charged hews scale with the stamina truly committed to the attack.",
+  lightSummary: "Weighty Pass: a deliberate cut that keeps pressure moving forward.",
+  heavySummary: "Committed Hew: a charged blow that rewards entering with real reserves.",
+  moveSpeed: 178,
+  moveAcceleration: 1400,
+  dashSpeed: 654,
+  dashCooldown: 386,
+  bladeLength: 100,
+  bladeWidth: 10,
+  lightAttack: { name: "Weighty Pass", damage: 32, range: 142, width: 78, recovery: 120, tint: 0xc88d73 },
+  heavyAttack: { name: "Committed Hew", damage: 52, range: 166, width: 98, windup: 150, recovery: 182, tint: 0xdfa084 },
+  techniques: {
+    identity: "Bounded heavy commitment.",
+    traitPrimary: "Brutal Commitment",
+    traitSecondary: "No Respite",
+    noRespiteHeavyRecoveryScale: WEAPON_TECH_TUNING.messer.noRespite.heavyRecoveryScale,
+    brutalCommitmentMaxDamageBonus: WEAPON_TECH_TUNING.messer.brutalCommitment.maxDamageBonus
+  }
+});
+
+const executionMesser = forgeSword(heavyKriegsmesser, {
+  id: "executionMesser",
+  name: "Execution Messer",
+  epithet: "Sentence",
+  accent: 0xd19272,
+  maxHp: 138,
+  summary: "A brutal final messer that turns a real Guard Break into one brief, violent execution window.",
+  lightSummary: "Sentence Cut: a heavy line check against a stunned enemy.",
+  heavySummary: "Final Sentence: a crushing follow-through that never becomes an automatic kill.",
+  moveSpeed: 176,
+  moveAcceleration: 1380,
+  dashSpeed: 642,
+  dashCooldown: 398,
+  bladeLength: 104,
+  bladeWidth: 11,
+  lightAttack: { name: "Sentence Cut", damage: 34, range: 148, width: 84, recovery: 124, tint: 0xe0a282 },
+  heavyAttack: { name: "Final Sentence", damage: 55, range: 174, width: 104, windup: 154, recovery: 188, tint: 0xf0b18d },
+  techniques: {
+    identity: "Strong execution only after a genuine break.",
+    traitPrimary: "Sentence",
+    traitSecondary: "Crushing Followthrough",
+    crushingFollowthroughImpactMultiplier: WEAPON_TECH_TUNING.messer.crushingFollowthrough.impactMultiplier,
+    sentenceDamageMultiplier: WEAPON_TECH_TUNING.messer.sentence.damageMultiplier,
+    sentenceHitstopMs: WEAPON_TECH_TUNING.messer.sentence.hitstopMs
+  }
+});
+
+const warMesser = forgeSword(kriegsmesser, {
+  id: "warMesser",
+  name: "War Messer",
+  epithet: "Forward pressure",
+  accent: 0xae8067,
+  maxHp: 130,
+  summary: "A field-ready messer that turns clean forward pressure into quicker recoveries rather than larger raw numbers.",
+  lightSummary: "Forward Pass: a driving cut that speeds the next reset if it lands clean.",
+  heavySummary: "Field Hew: a forward committed chop built for sustained pressure.",
+  moveSpeed: 196,
+  moveAcceleration: 1580,
+  dashSpeed: 714,
+  dashCooldown: 332,
+  bladeLength: 94,
+  lightAttack: { name: "Forward Pass", damage: 29, range: 132, width: 66, recovery: 104, tint: 0xc09278 },
+  heavyAttack: { name: "Field Hew", damage: 47, range: 154, width: 84, recovery: 162, tint: 0xd4a38a },
+  techniques: {
+    identity: "Forward-moving war pressure.",
+    traitPrimary: "Forward Pressure",
+    traitSecondary: "No Respite",
+    noRespiteHeavyRecoveryScale: WEAPON_TECH_TUNING.messer.noRespite.heavyRecoveryScale,
+    forwardPressureRecoveryScale: WEAPON_TECH_TUNING.messer.forwardPressure.recoveryScale
+  }
+});
+
+const feldmesser = forgeSword(warMesser, {
+  id: "feldmesser",
+  name: "Feldmesser",
+  epithet: "Campaigner",
+  accent: 0xc69a78,
+  maxHp: 134,
+  summary: "A campaign blade that can keep one hard-won Flow chain alive through a single damaging mistake each encounter.",
+  lightSummary: "Campaign Cut: a practical cut that keeps the march alive.",
+  heavySummary: "Marching Hew: a grounded blow for continuing the advance.",
+  moveSpeed: 194,
+  moveAcceleration: 1560,
+  dashSpeed: 706,
+  dashCooldown: 338,
+  bladeLength: 98,
+  lightAttack: { name: "Campaign Cut", damage: 31, range: 138, width: 72, recovery: 106, tint: 0xd6ad88 },
+  heavyAttack: { name: "Marching Hew", damage: 49, range: 160, width: 90, recovery: 166, tint: 0xe6bd96 },
+  techniques: {
+    identity: "One durable pressure chain per encounter.",
+    traitPrimary: "Campaigner",
+    traitSecondary: "Forward Pressure",
+    forwardPressureRecoveryScale: WEAPON_TECH_TUNING.messer.forwardPressure.recoveryScale,
+    campaignerFlowWindowMs: WEAPON_TECH_TUNING.messer.campaigner.flowWindowMs
+  }
+});
+
+const landsknechtMesser = forgeSword(feldmesser, {
+  id: "landsknechtMesser",
+  name: "Landsknecht Messer",
+  epithet: "Relentless",
+  accent: 0xe1bd8d,
+  maxHp: 136,
+  summary: "A final pressure messer that earns increasing movement only while clean attacks keep the enemy under real threat.",
+  lightSummary: "Relentless Pass: a driving cut that builds campaign tempo.",
+  heavySummary: "Landsknecht Hew: a heavy check that keeps the pressure alive without banking it forever.",
+  moveSpeed: 198,
+  moveAcceleration: 1620,
+  dashSpeed: 722,
+  dashCooldown: 322,
+  bladeLength: 102,
+  lightAttack: { name: "Relentless Pass", damage: 32, range: 144, width: 74, recovery: 102, tint: 0xe8c798 },
+  heavyAttack: { name: "Landsknecht Hew", damage: 51, range: 166, width: 94, recovery: 164, tint: 0xf3d0a2 },
+  techniques: {
+    identity: "Momentum that disappears at true neutral.",
+    traitPrimary: "Relentless",
+    traitSecondary: "Campaigner",
+    campaignerFlowWindowMs: 0,
+    relentlessMoveStep: WEAPON_TECH_TUNING.messer.relentless.moveStep,
+    relentlessMaxStacks: WEAPON_TECH_TUNING.messer.relentless.maxStacks,
+    relentlessDurationMs: WEAPON_TECH_TUNING.messer.relentless.durationMs
+  }
+});
+
+const fechtmesser = forgeSword(messer, {
+  id: "fechtmesser",
+  name: "Fechtmesser",
+  epithet: "Countercut",
+  accent: 0xa7c0af,
+  maxHp: 120,
+  summary: "A technical messer split that turns a Standard Bind into one empowered light countercut.",
+  lightSummary: "Countercut: a quick blade answer after a clean bind.",
+  heavySummary: "Line Hew: a reserved committed cut that preserves technical timing.",
+  moveSpeed: 206,
+  moveAcceleration: 1660,
+  dashSpeed: 742,
+  dashCooldown: 314,
+  bladeLength: 82,
+  lightAttack: { name: "Countercut", damage: 26, range: 122, width: 60, recovery: 94, tint: 0xb9d1bf },
+  heavyAttack: { name: "Line Hew", damage: 40, range: 148, width: 76, recovery: 148, tint: 0xc9dfce },
+  techniques: {
+    identity: "Technical bind counterplay.",
+    traitPrimary: "Countercut",
+    traitSecondary: "Ruthless Tempo",
+    ruthlessTempoStaminaDiscount: WEAPON_TECH_TUNING.messer.ruthlessTempo.staminaDiscount,
+    countercutLightDamageMultiplier: WEAPON_TECH_TUNING.messer.countercut.lightDamageMultiplier,
+    countercutWindowMs: WEAPON_TECH_TUNING.messer.countercut.windowMs
+  }
+});
+
+const longFechtmesser = forgeSword(fechtmesser, {
+  id: "longFechtmesser",
+  name: "Long Fechtmesser",
+  epithet: "Indes",
+  accent: 0xc4d9c7,
+  maxHp: 122,
+  summary: "A longer fencing messer whose Perfect Bind creates a small, sharp next-attack timing window.",
+  lightSummary: "Indes Cut: a quick line change that comes faster after perfection.",
+  heavySummary: "Long Answer: a measured hew that retains fencing precision.",
+  moveSpeed: 204,
+  moveAcceleration: 1640,
+  dashSpeed: 736,
+  dashCooldown: 320,
+  bladeLength: 92,
+  lightAttack: { name: "Indes Cut", damage: 27, range: 134, width: 62, recovery: 96, tint: 0xd0e2d2 },
+  heavyAttack: { name: "Long Answer", damage: 42, range: 158, width: 78, recovery: 150, tint: 0xddecdc },
+  techniques: {
+    identity: "Perfect bind timing into initiative.",
+    traitPrimary: "Indes",
+    traitSecondary: "Countercut",
+    countercutLightDamageMultiplier: WEAPON_TECH_TUNING.messer.countercut.lightDamageMultiplier,
+    countercutWindowMs: WEAPON_TECH_TUNING.messer.countercut.windowMs,
+    indesWindupScale: WEAPON_TECH_TUNING.messer.indes.windupScale,
+    indesWindowMs: WEAPON_TECH_TUNING.messer.indes.windowMs
+  }
+});
+
+const mastersMesser = forgeSword(longFechtmesser, {
+  id: "mastersMesser",
+  name: "Master's Messer",
+  epithet: "Vor",
+  accent: 0xe0efcf,
+  maxHp: 124,
+  summary: "A final technical messer that converts a truly perfect measure into one quicker, harder initiative answer.",
+  lightSummary: "Vor Cut: a precise answer that makes exact measure matter.",
+  heavySummary: "Master's Answer: a compact heavy line that cashes in the next initiative.",
+  moveSpeed: 210,
+  moveAcceleration: 1700,
+  dashSpeed: 752,
+  dashCooldown: 304,
+  bladeLength: 96,
+  lightAttack: { name: "Vor Cut", damage: 28, range: 140, width: 64, recovery: 92, tint: 0xe8f5dc },
+  heavyAttack: { name: "Master's Answer", damage: 44, range: 164, width: 80, recovery: 146, tint: 0xf2ffe8 },
+  techniques: {
+    identity: "Exact measure into the initiative.",
+    traitPrimary: "Vor",
+    traitSecondary: "Indes",
+    indesWindupScale: WEAPON_TECH_TUNING.messer.indes.windupScale,
+    indesWindowMs: WEAPON_TECH_TUNING.messer.indes.windowMs,
+    vorRecoveryScale: WEAPON_TECH_TUNING.messer.vor.recoveryScale,
+    vorImpactMultiplier: WEAPON_TECH_TUNING.messer.vor.impactMultiplier,
+    vorWindowMs: WEAPON_TECH_TUNING.messer.vor.windowMs
   }
 });
 
@@ -2853,6 +3332,8 @@ const BASE_SWORD_DEFINITIONS: Record<SwordId, SwordDefinition> = {
   warArmingSword,
   longsword,
   excalibur,
+  tizona,
+  colada,
   greatsword,
   zweihander,
   flamberge,
@@ -2882,12 +3363,25 @@ const BASE_SWORD_DEFINITIONS: Record<SwordId, SwordDefinition> = {
   hangerSword,
   navalCutlass,
   dusack,
+  steelDusack,
+  mastersDusack,
+  officersCutlass,
+  executionFalchion,
+  warFalchion,
   hauswehr,
   messer,
   kriegsmesser,
   grossesMesser,
   langesMesser,
-  twoHandedMesser
+  twoHandedMesser,
+  heavyKriegsmesser,
+  executionMesser,
+  warMesser,
+  feldmesser,
+  landsknechtMesser,
+  fechtmesser,
+  longFechtmesser,
+  mastersMesser
 };
 
 const FINAL_SWORD_TUNING: Record<SwordId, SwordOverrides> = {
@@ -2982,6 +3476,8 @@ const FINAL_SWORD_TUNING: Record<SwordId, SwordOverrides> = {
     }
   },
   excalibur: {},
+  tizona: {},
+  colada: {},
   greatsword: {
     maxHp: 136,
     heavyAttack: {
@@ -3258,6 +3754,8 @@ const FINAL_SWORD_TUNING: Record<SwordId, SwordOverrides> = {
       dashStaminaCostModifier: -2
     }
   },
+  steelDusack: {},
+  mastersDusack: {},
   hangerSword: {
     maxHp: 126,
     lightAttack: {
@@ -3277,6 +3775,9 @@ const FINAL_SWORD_TUNING: Record<SwordId, SwordOverrides> = {
       bindImpactMultiplier: 1.08
     }
   },
+  officersCutlass: {},
+  executionFalchion: {},
+  warFalchion: {},
   hauswehr: {
     maxHp: 120,
     lightAttack: {
@@ -3337,7 +3838,15 @@ const FINAL_SWORD_TUNING: Record<SwordId, SwordOverrides> = {
       staminaMaxBonus: 8,
       bindImpactMultiplier: 1.14
     }
-  }
+  },
+  heavyKriegsmesser: {},
+  executionMesser: {},
+  warMesser: {},
+  feldmesser: {},
+  landsknechtMesser: {},
+  fechtmesser: {},
+  longFechtmesser: {},
+  mastersMesser: {}
 };
 
 export const SWORD_DEFINITIONS: Record<SwordId, SwordDefinition> = Object.fromEntries(

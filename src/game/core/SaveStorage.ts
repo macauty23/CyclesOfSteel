@@ -37,7 +37,16 @@ export function saveBossClearFlags(flags: Iterable<string>): void {
 
 export function hasClaimedExcalibur(): boolean { return Boolean(loadProfile().claimedExcalibur); }
 export function markExcaliburClaimed(): void { localStorage.setItem(PROFILE_KEY, JSON.stringify({ ...loadProfile(), claimedExcalibur: true })); }
+export function loadClaimedLegendarySwordIds(): string[] {
+  const profile = loadProfile();
+  return [...new Set([...(profile.claimedLegendarySwordIds ?? []), ...(profile.claimedExcalibur ? ["excalibur"] : [])])];
+}
+export function markLegendarySwordClaimed(swordId: string): void {
+  const profile = loadProfile();
+  const claimedLegendarySwordIds = [...new Set([...(profile.claimedLegendarySwordIds ?? []), swordId])];
+  localStorage.setItem(PROFILE_KEY, JSON.stringify({ ...profile, claimedLegendarySwordIds }));
+}
 
-function loadProfile(): { bossClearFlags?: string[]; claimedExcalibur?: boolean } {
+function loadProfile(): { bossClearFlags?: string[]; claimedExcalibur?: boolean; claimedLegendarySwordIds?: string[] } {
   try { return JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "{}"); } catch { return {}; }
 }

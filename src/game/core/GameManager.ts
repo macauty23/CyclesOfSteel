@@ -36,7 +36,17 @@ import {
 import { TEST_MODE_PASSWORD, createTutorialChapter } from "../tutorial/tutorialData";
 import { fadeOutMajorScene, MAJOR_SCENE_FADE_MS } from "../ui/sceneFades";
 import { SCENE_KEYS, type SceneKey } from "./SceneKeys";
-import { clearActiveRun, hasClaimedExcalibur, loadActiveRun, loadBossClearFlags, markExcaliburClaimed, saveActiveRun, saveBossClearFlags } from "./SaveStorage";
+import {
+  clearActiveRun,
+  hasClaimedExcalibur,
+  loadActiveRun,
+  loadBossClearFlags,
+  loadClaimedLegendarySwordIds,
+  markExcaliburClaimed,
+  markLegendarySwordClaimed,
+  saveActiveRun,
+  saveBossClearFlags
+} from "./SaveStorage";
 import type {
   BuildCategoryId,
   CombatStats,
@@ -80,6 +90,34 @@ function getWeaponTechChain(nodeId: WeaponTechNodeId): WeaponTechNodeId[] {
 function getWeaponTechChildren(parentId: WeaponTechNodeId): WeaponTechNodeId[] {
   return WEAPON_TECH_ORDER.filter((nodeId) => WEAPON_TECH_TREE[nodeId].prerequisiteIds.includes(parentId));
 }
+
+const LEGENDARY_ASCENSIONS: Record<LegendarySwordId, {
+  baseNodeId: WeaponTechNodeId;
+  baseSwordId: SwordId;
+  requiredBossFlag: string;
+  requirementLabel: string;
+  requiresLongswordTrial?: boolean;
+}> = {
+  excalibur: {
+    baseNodeId: "longsword",
+    baseSwordId: "longsword",
+    requiredBossFlag: "boss:honored",
+    requirementLabel: "Blessed flawless streak: 8",
+    requiresLongswordTrial: true
+  },
+  tizona: {
+    baseNodeId: "needleblade",
+    baseSwordId: "needleblade",
+    requiredBossFlag: "boss:enflamed",
+    requirementLabel: "Defeat The Enflamed"
+  },
+  colada: {
+    baseNodeId: "pappenheimerRapier",
+    baseSwordId: "pappenheimerRapier",
+    requiredBossFlag: "boss:exalted",
+    requirementLabel: "Defeat The Exalted"
+  }
+};
 
 function createDefaultPartSelections(): Record<SwordPartId, SwordPartOptionId> {
   return {
@@ -203,6 +241,7 @@ export class GameManager {
 
   constructor() {
     this.defeatedBossClearFlags = new Set(loadBossClearFlags());
+    this.unlockedLegendarySwordIds = new Set(loadClaimedLegendarySwordIds() as LegendarySwordId[]);
     this.loadSavedRun();
   }
 
@@ -328,6 +367,39 @@ export class GameManager {
 
   getLegendarySwordOverrideId(): LegendarySwordId | null {
     return this.runState.legendarySwordOverrideId;
+  }
+
+  getLegendarySwordForTechNode(nodeId: WeaponTechNodeId): LegendarySwordId | null {
+    return (Object.entries(LEGENDARY_ASCENSIONS) as [LegendarySwordId, (typeof LEGENDARY_ASCENSIONS)[LegendarySwordId]][])
+      .find(([, ascension]) => ascension.baseNodeId === nodeId)?.[0] ?? null;
+  }
+
+  isLegendaryNodeRevealed(swordId: LegendarySwordId): boolean {
+    const ascension = LEGENDARY_ASCENSIONS[swordId];
+    if (swordId === "excalibur") {
+      return this.isExcaliburNodeRevealed();
+    }
+
+    return this.isWeaponTechUnlocked(ascension.baseNodeId) && getWeaponTechChildren(ascension.baseNodeId).length === 0;
+  }
+
+  getLegendaryAscensionState(swordId: LegendarySwordId): {
+    unlocked: boolean;
+    ready: boolean;
+    revealed: boolean;
+    bossCleared: boolean;
+    requirementLabel: string;
+  } {
+    const ascension = LEGENDARY_ASCENSIONS[swordId];
+    const bossCleared = this.testModeEnabled || this.hasBossClearFlag(ascension.requiredBossFlag);
+    const revealed = this.isLegendaryNodeRevealed(swordId);
+    return {
+      unlocked: this.isLegendarySwordUnlocked(swordId),
+      ready: this.canAscendToLegendary(swordId),
+      revealed,
+      bossCleared,
+      requirementLabel: ascension.requirementLabel
+    };
   }
 
   getExcaliburAscensionState(): {
@@ -1070,23 +1142,43 @@ export class GameManager {
   }
 
   canAscendLongswordToExcalibur(): boolean {
+    return this.canAscendToLegendary("excalibur");
+  }
+
+  canAscendToLegendary(swordId: LegendarySwordId): boolean {
+    const ascension = LEGENDARY_ASCENSIONS[swordId];
+    if (this.isLegendarySwordUnlocked(swordId) || !this.isLegendaryNodeRevealed(swordId)) {
+      return false;
+    }
+
+    if (swordId === "excalibur") {
+      return (
+        (this.testModeEnabled || this.hasBossClearFlag(ascension.requiredBossFlag)) &&
+        (this.testModeEnabled || this.longswordBlessedFlawlessStreak >= 8)
+      );
+    }
+
     return (
-      !this.isLegendarySwordUnlocked("excalibur") &&
-      (this.testModeEnabled || this.hasBossClearFlag("boss:honored")) &&
-      (this.testModeEnabled || this.longswordBlessedFlawlessStreak >= 8) &&
-      this.isExcaliburNodeRevealed()
+      this.testModeEnabled || this.hasBossClearFlag(ascension.requiredBossFlag)
     );
   }
 
   ascendLongswordToExcalibur(): boolean {
-    if (!this.canAscendLongswordToExcalibur()) {
+    return this.ascendToLegendary("excalibur");
+  }
+
+  ascendToLegendary(swordId: LegendarySwordId): boolean {
+    if (!this.canAscendToLegendary(swordId)) {
       return false;
     }
 
-    this.unlockedLegendarySwordIds.add("excalibur");
-    markExcaliburClaimed();
-    this.runState.legendarySwordOverrideId = "excalibur";
-    this.excaliburAscensionReady = false;
+    this.unlockedLegendarySwordIds.add(swordId);
+    markLegendarySwordClaimed(swordId);
+    if (swordId === "excalibur") {
+      markExcaliburClaimed();
+      this.excaliburAscensionReady = false;
+    }
+    this.runState.legendarySwordOverrideId = swordId;
     this.saveRun();
     return true;
   }
@@ -1280,7 +1372,7 @@ export class GameManager {
       if (!saved?.runState || !saved?.worldNodes) return;
       this.runState = saved.runState as RunState; this.currentSceneKey = (saved.currentSceneKey ?? SCENE_KEYS.WorldMap) as SceneKey; this.worldNodes = saved.worldNodes as Record<string, WorldNodeDefinition>;
       this.visibleWorldNodeIds = saved.visibleWorldNodeIds ?? []; this.worldNodeOrdinal = saved.worldNodeOrdinal ?? 0; this.worldDepthCursor = saved.worldDepthCursor ?? 0;
-      this.defeatedBossClearFlags = new Set([...loadBossClearFlags(), ...(saved.defeatedBossClearFlags ?? [])]); this.unlockedLegendarySwordIds = new Set((saved.unlockedLegendarySwordIds ?? []) as LegendarySwordId[]);
+      this.defeatedBossClearFlags = new Set([...loadBossClearFlags(), ...(saved.defeatedBossClearFlags ?? [])]); this.unlockedLegendarySwordIds = new Set([...loadClaimedLegendarySwordIds(), ...(saved.unlockedLegendarySwordIds ?? [])] as LegendarySwordId[]);
       this.excaliburAscensionReady = Boolean(saved.excaliburAscensionReady); this.longswordBlessedFlawlessStreak = saved.longswordBlessedFlawlessStreak ?? 0;
       this.rareEventSpawnedThisRun = Boolean(saved.rareEventSpawnedThisRun); this.tutorialCompleted = Boolean(saved.tutorialCompleted);
     } catch { clearActiveRun(); }

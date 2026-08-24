@@ -4,24 +4,24 @@ import type {
   AttackKind,
   AttackProfile,
   BossDefinition,
+  BossPhaseHp,
   EnemyCombatSnapshot,
   EnemyHazardSignal,
   EnemyUpdateResult,
   HitImpactProfile
 } from "../core/types";
+import { BOSS_TUNING } from "../data/bossTuning";
 import { ARENA, COLORS } from "../ui/theme";
 
 type BossBody = Phaser.GameObjects.Rectangle & {
   body: Phaser.Physics.Arcade.Body;
 };
 
-type BossPhase = 1 | 2;
-
 interface BossConfig {
   scene: Phaser.Scene;
   x: number;
   y: number;
-  phaseHp: [number, number];
+  phaseHp: BossPhaseHp;
   speed: number;
   acceleration: number;
   tint: number;
@@ -121,12 +121,12 @@ export class BossEnemy {
 
   private readonly scene: Phaser.Scene;
   private readonly definition: BossDefinition;
-  private readonly phaseHp: [number, number];
+  private readonly phaseHp: number[];
   private readonly speed: number;
   private readonly acceleration: number;
   private readonly size: number;
   private readonly accent: number;
-  private readonly phaseAttackKits: [BossAttackKit, BossAttackKit];
+  private readonly phaseAttackKits: BossAttackKit[];
   private readonly facing = new Phaser.Math.Vector2(-1, 0);
 
   private currentPhaseIndex = 0;
@@ -139,6 +139,17 @@ export class BossEnemy {
   private specialCooldownRemaining = 1800;
   private arenaCooldownRemaining = 1600;
   private phaseTransitionRemaining = 0;
+  private resolve = 0;
+  private resolveQuietRemaining = 0;
+  private momentumRecoveryRemaining = 0;
+  private permafrostInitiativeRemaining = 0;
+  private enflamedPrediction: {
+    stage: "arrival" | "lance" | "dive";
+    remaining: number;
+    destination: { x: number; y: number };
+    lanceDirection: Phaser.Math.Vector2;
+    diveDirection: Phaser.Math.Vector2;
+  } | null = null;
   private stunRemaining = 0;
   private slowRemaining = 0;
   private slowFactor = 1;
@@ -174,7 +185,7 @@ export class BossEnemy {
 
     this.scene = scene;
     this.definition = definition;
-    this.phaseHp = [...phaseHp] as [number, number];
+    this.phaseHp = [...phaseHp];
     this.currentPhaseHp = this.phaseHp[0];
     this.speed = speed;
     this.acceleration = acceleration;
@@ -237,8 +248,8 @@ export class BossEnemy {
     return this.definition.name;
   }
 
-  getCurrentPhase(): BossPhase {
-    return (this.currentPhaseIndex + 1) as BossPhase;
+  getCurrentPhase(): number {
+    return this.currentPhaseIndex + 1;
   }
 
   getBossLabel(): string {
@@ -249,8 +260,69 @@ export class BossEnemy {
     return {
       phase: this.currentAttack?.phase ?? "idle",
       isStunned: this.stunRemaining > 0 || this.phaseTransitionRemaining > 0,
+      guardRemaining: this.guardRemaining,
       slowRemaining: this.slowRemaining
     };
+  }
+
+  getResolvePercent(): number {
+    return Math.round((this.resolve / BOSS_TUNING.resolve.max) * 100);
+  }
+
+  /** Applies persistent anti-bully resistance without using the player combo counter. */
+  resolveIncomingPressure(
+    damage: number,
+    impact: HitImpactProfile,
+    dominion: boolean,
+    heavy: boolean
+  ): { damage: number; impact: HitImpactProfile; resolvePercent: number } {
+    if (this.definition.pool !== "biome") {
+      return { damage, impact, resolvePercent: 0 };
+    }
+
+    const penetration = dominion ? BOSS_TUNING.resolve.dominionPenetration : 0;
+    const effectiveResolve = this.resolve * (1 - penetration);
+    const resolveRatio = effectiveResolve / BOSS_TUNING.resolve.max;
+    const damageScale = 1 - resolveRatio * BOSS_TUNING.resolve.maxDamageMitigation;
+    const impactScale = 1 - resolveRatio * BOSS_TUNING.resolve.maxImpactMitigation;
+    const resolved = {
+      damage: Math.max(1, Math.round(damage * damageScale)),
+      impact: {
+        ...impact,
+        displacement: Math.max(0, Math.round(impact.displacement * impactScale)),
+        controlLossMs: Math.max(0, Math.round(impact.controlLossMs * impactScale)),
+        interruptChance: Math.max(0.04, impact.interruptChance * impactScale)
+      },
+      resolvePercent: this.getResolvePercent()
+    };
+
+    this.resolve = Math.min(
+      BOSS_TUNING.resolve.max,
+      this.resolve + BOSS_TUNING.resolve.gainPerPressureHit + (heavy ? BOSS_TUNING.resolve.heavyHitBonus : 0)
+    );
+    this.resolveQuietRemaining = 0;
+    return resolved;
+  }
+
+  noteRegainedInitiative(): void {
+    if (this.definition.pool !== "biome") {
+      return;
+    }
+
+    this.resolve = Math.max(0, this.resolve - BOSS_TUNING.resolve.initiativeDecay);
+    this.resolveQuietRemaining = 0;
+  }
+
+  notifyAttackMissed(signal: AttackExecutionSignal): boolean {
+    if (this.definition.id !== "apex" || !this.isMomentumCharge(signal)) {
+      return false;
+    }
+
+    const phaseIndex = Math.min(2, this.currentPhaseIndex) as 0 | 1 | 2;
+    this.momentumRecoveryRemaining = Math.max(this.momentumRecoveryRemaining, BOSS_TUNING.apex.missedChargeRecoveryMs[phaseIndex]);
+    this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, this.momentumRecoveryRemaining);
+    this.guardRemaining = 0;
+    return true;
   }
 
   getTelegraphSignal(): AttackExecutionSignal | null {
@@ -300,6 +372,20 @@ export class BossEnemy {
       result.spawnedProjectiles = attackResult.spawnedProjectiles;
     }
 
+    const predictionResult = this.updateEnflamedPrediction(deltaMs, targetX, targetY);
+    if (predictionResult) {
+      if (predictionResult.spawnedHazards?.length) {
+        result.spawnedHazards = [...(result.spawnedHazards ?? []), ...predictionResult.spawnedHazards];
+      }
+      if (predictionResult.feedbackText) {
+        result.feedbackText = predictionResult.feedbackText;
+        result.feedbackColor = predictionResult.feedbackColor;
+      }
+      this.bodyObject.body.setAcceleration(0, 0);
+      this.syncPresentation();
+      return result;
+    }
+
     if (this.phaseTransitionRemaining > 0) {
       this.bodyObject.body.setAcceleration(0, 0);
       this.bodyObject.body.setVelocity(this.bodyObject.body.velocity.x * 0.84, this.bodyObject.body.velocity.y * 0.84);
@@ -308,6 +394,13 @@ export class BossEnemy {
     }
 
     if (this.currentAttack || this.stunRemaining > 0) {
+      this.syncPresentation();
+      return result;
+    }
+
+    if (this.momentumRecoveryRemaining > 0) {
+      this.bodyObject.body.setAcceleration(0, 0);
+      this.bodyObject.body.setVelocity(this.bodyObject.body.velocity.x * 0.76, this.bodyObject.body.velocity.y * 0.76);
       this.syncPresentation();
       return result;
     }
@@ -455,6 +548,9 @@ export class BossEnemy {
 
     this.guardRemaining = 0;
     this.counterQueued = false;
+    if (this.definition.id === "exalted") {
+      this.arenaCooldownRemaining = Math.max(this.arenaCooldownRemaining, BOSS_TUNING.exalted.bindReconfigurationDelayMs);
+    }
     this.stun(stunMs);
   }
 
@@ -463,19 +559,20 @@ export class BossEnemy {
   }
 
   private getPhaseMoveScale(): number {
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
+    const phaseThree = this.currentPhaseIndex >= 2;
 
     switch (this.definition.id) {
       case "apex":
-        return phaseTwo ? 1.02 : 0.92;
+        return phaseThree ? 1.18 : phaseTwo ? 1.02 : 0.92;
       case "enflamed":
-        return phaseTwo ? 1.14 : 1;
+        return phaseThree ? 1.08 : phaseTwo ? 1.14 : 1;
       case "honored":
-        return phaseTwo ? 0.82 : 0.7;
+        return phaseThree ? 0.88 : phaseTwo ? 0.82 : 0.7;
       case "exalted":
-        return phaseTwo ? 0.84 : 0.72;
+        return phaseThree ? 0.9 : phaseTwo ? 0.84 : 0.72;
       case "permafrost":
-        return phaseTwo ? 0.9 : 0.76;
+        return phaseThree ? 0.84 : phaseTwo ? 0.9 : 0.76;
       case "skelecar":
         return phaseTwo ? 1.18 : 1.08;
       case "danu":
@@ -486,7 +583,10 @@ export class BossEnemy {
   }
 
   private getPhaseCooldownScale(): number {
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
+    if (this.currentPhaseIndex >= 2 && this.definition.pool === "biome") {
+      return BOSS_TUNING.phaseThreeCadence[this.definition.id as keyof typeof BOSS_TUNING.phaseThreeCadence];
+    }
 
     switch (this.definition.id) {
       case "apex":
@@ -530,7 +630,7 @@ export class BossEnemy {
   }
 
   private getTeleportRecoveryDurationMs(): number {
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
 
     switch (this.definition.id) {
       case "enflamed":
@@ -542,10 +642,11 @@ export class BossEnemy {
     }
   }
 
-  private createAttackKits(damageBonus: number, aggression: number): [BossAttackKit, BossAttackKit] {
+  private createAttackKits(damageBonus: number, aggression: number): BossAttackKit[] {
     const accent = this.definition.accent;
     const power = Math.round(damageBonus + aggression * 2);
     const phaseTwoPower = power + 4;
+    const phaseThreePower = power + 8;
 
     switch (this.definition.id) {
       // The Apex is a pursuit boss: it should commit to lanes, force movement, and be punishable when it overshoots.
@@ -553,13 +654,18 @@ export class BossEnemy {
         return [
           {
             light: createAttack("Raking Bite", accent, "sweep", "standard", "melee", 14 + power, 112, 72, 138, 94, 154, 114, createImpact(42, 150, 22, 0.0032)),
-            heavy: createAttack("Tide Reaper", accent, "sweep", "cleave", "melee", 20 + power, 148, 116, 214, 104, 248, 188, createImpact(68, 210, 32, 0.004)),
-            signature: createAttack("Breaker Sweep", accent, "sweep", "cleave", "melee", 18 + power, 150, 108, 188, 116, 204, 176, createImpact(60, 196, 30, 0.0038))
+            heavy: createAttack("Undertow Charge", accent, "thrust", "lunge", "melee", 20 + power, 164, 54, 254, 150, 276, 294, createImpact(68, 210, 32, 0.004)),
+            signature: createAttack("Breaker Charge", accent, "thrust", "lunge", "melee", 18 + power, 186, 58, 286, 166, 300, 338, createImpact(60, 196, 30, 0.0038))
           },
           {
             light: createAttack("Riptide Maw", accent, "sweep", "standard", "melee", 18 + phaseTwoPower, 124, 84, 122, 98, 142, 132, createImpact(52, 178, 26, 0.0038)),
-            heavy: createAttack("Depth Reaper", accent, "sweep", "cleave", "melee", 24 + phaseTwoPower, 156, 132, 188, 104, 228, 204, createImpact(80, 236, 38, 0.0046)),
-            signature: createAttack("Breaker Spiral", accent, "sweep", "cleave", "melee", 22 + phaseTwoPower, 160, 126, 166, 120, 188, 210, createImpact(70, 224, 34, 0.0044))
+            heavy: createAttack("Current Charge", accent, "thrust", "lunge", "melee", 24 + phaseTwoPower, 182, 58, 224, 152, 238, 342, createImpact(80, 236, 38, 0.0046)),
+            signature: createAttack("Riptide Charge", accent, "thrust", "lunge", "melee", 22 + phaseTwoPower, 204, 62, 248, 176, 244, 388, createImpact(70, 224, 34, 0.0044))
+          },
+          {
+            light: createAttack("Frenzy Bite", accent, "sweep", "standard", "melee", 22 + phaseThreePower, 132, 90, 116, 92, 126, 148, createImpact(58, 188, 28, 0.004)),
+            heavy: createAttack("Frenzy Charge", accent, "thrust", "lunge", "melee", 30 + phaseThreePower, 220, 66, 198, 164, 220, 438, createImpact(96, 278, 42, 0.0052)),
+            signature: createAttack("Abyssal Crossing", accent, "thrust", "lunge", "melee", 34 + phaseThreePower, 322, 72, 520, 286, 360, 610, createImpact(112, 324, 48, 0.006))
           }
         ];
       // The Enflamed is a repositioning boss: its danger should come from learnable landings and fire lanes, not random blinks.
@@ -574,6 +680,11 @@ export class BossEnemy {
             light: createAttack("Ash Halo", accent, "sweep", "standard", "melee", 17 + phaseTwoPower, 108, 84, 96, 92, 104, 124, createImpact(48, 160, 22, 0.0037)),
             heavy: createAttack("Solar Puncture", accent, "thrust", "lunge", "ranged", 22 + phaseTwoPower, 262, 36, 134, 100, 130, 0, createImpact(40, 148, 20, 0.0034)),
             signature: createAttack("Phoenix Drop", accent, "thrust", "lunge", "melee", 28 + phaseTwoPower, 182, 44, 128, 96, 152, 238, createImpact(80, 238, 38, 0.0048))
+          },
+          {
+            light: createAttack("Prophecy Halo", accent, "sweep", "standard", "melee", 20 + phaseThreePower, 118, 88, 112, 92, 118, 134, createImpact(54, 178, 24, 0.004)),
+            heavy: createAttack("Foretold Lance", accent, "thrust", "lunge", "ranged", 26 + phaseThreePower, 276, 38, 156, 104, 142, 0, createImpact(48, 166, 22, 0.0038)),
+            signature: createAttack("Prophecy Dive", accent, "thrust", "lunge", "melee", 32 + phaseThreePower, 198, 46, 142, 104, 178, 270, createImpact(90, 262, 40, 0.0052))
           }
         ];
       // The Honored is the duel boss: it should fence, bait, answer greed, and punish hard disengages without turning into a chase boss.
@@ -582,14 +693,19 @@ export class BossEnemy {
           {
             light: createAttack("Checking Cut", accent, "sweep", "standard", "melee", 13 + power, 104, 64, 132, 84, 132, 84, createImpact(32, 120, 18, 0.0028)),
             heavy: createAttack("Honor Thrust", accent, "thrust", "lunge", "melee", 19 + power, 156, 30, 166, 88, 164, 192, createImpact(58, 186, 28, 0.0036)),
-            signature: createAttack("Crossbow Verdict", accent, "thrust", "lunge", "ranged", 29 + power, 292, 24, 236, 112, 276, 0, createImpact(44, 168, 24, 0.0032)),
             counter: createAttack("Formal Riposte", accent, "thrust", "lunge", "melee", 22 + power, 160, 28, 66, 88, 136, 208, createImpact(60, 196, 30, 0.0038))
           },
           {
             light: createAttack("Measured Cut", accent, "sweep", "standard", "melee", 16 + phaseTwoPower, 114, 72, 116, 88, 120, 96, createImpact(40, 150, 20, 0.0032)),
             heavy: createAttack("Execution Line", accent, "thrust", "lunge", "melee", 24 + phaseTwoPower, 166, 30, 146, 92, 148, 220, createImpact(72, 224, 34, 0.0042)),
-            signature: createAttack("Royal Bolt", accent, "thrust", "lunge", "ranged", 35 + phaseTwoPower, 316, 26, 214, 116, 248, 0, createImpact(52, 188, 28, 0.0036)),
+            signature: createAttack("Half-Step Feint", accent, "thrust", "lunge", "melee", 20 + phaseTwoPower, 148, 28, 276, 64, 114, 180, createImpact(48, 176, 26, 0.0035)),
             counter: createAttack("Master's Answer", accent, "thrust", "lunge", "melee", 26 + phaseTwoPower, 162, 26, 58, 90, 126, 214, createImpact(68, 216, 32, 0.004))
+          },
+          {
+            light: createAttack("Perfect Cut", accent, "sweep", "standard", "melee", 20 + phaseThreePower, 120, 72, 124, 76, 118, 112, createImpact(50, 176, 22, 0.0038)),
+            heavy: createAttack("Perfect Line", accent, "thrust", "lunge", "melee", 30 + phaseThreePower, 178, 30, 154, 78, 150, 238, createImpact(86, 258, 38, 0.005)),
+            signature: createAttack("Closing Feint", accent, "thrust", "lunge", "melee", 24 + phaseThreePower, 158, 28, 302, 58, 98, 202, createImpact(62, 210, 30, 0.0042)),
+            counter: createAttack("Final Answer", accent, "thrust", "lunge", "melee", 32 + phaseThreePower, 172, 26, 54, 82, 132, 226, createImpact(78, 242, 36, 0.0046))
           }
         ];
       // The Exalted is the arena boss: the player should solve stable hazard patterns while weathering heavy, deliberate hits.
@@ -604,6 +720,11 @@ export class BossEnemy {
             light: createAttack("Ward Cleave", accent, "sweep", "cleave", "melee", 18 + phaseTwoPower, 126, 108, 134, 100, 146, 120, createImpact(58, 194, 26, 0.0038)),
             heavy: createAttack("Cathedral Slam", accent, "sweep", "cleave", "melee", 26 + phaseTwoPower, 160, 136, 188, 114, 202, 188, createImpact(96, 270, 42, 0.0052)),
             signature: createAttack("Engine Verdict", accent, "thrust", "lunge", "melee", 24 + phaseTwoPower, 166, 44, 148, 100, 152, 214, createImpact(78, 238, 36, 0.0046))
+          },
+          {
+            light: createAttack("Checkmate Cleave", accent, "sweep", "cleave", "melee", 22 + phaseThreePower, 134, 112, 144, 98, 134, 132, createImpact(66, 218, 28, 0.0042)),
+            heavy: createAttack("Checkmate Slam", accent, "sweep", "cleave", "melee", 32 + phaseThreePower, 172, 140, 204, 112, 192, 202, createImpact(106, 296, 44, 0.0056)),
+            signature: createAttack("Board Step", accent, "thrust", "lunge", "melee", 28 + phaseThreePower, 176, 46, 160, 96, 154, 228, createImpact(86, 252, 38, 0.0048))
           }
         ];
       // Skelecar is a trickster secret boss: it sidesteps, forces lazy movement with blue lanes, and volleys after readable resets.
@@ -645,7 +766,14 @@ export class BossEnemy {
           {
             light: createAttack("Frost Draw", accent, "thrust", "standard", "melee", 16 + phaseTwoPower, 124, 30, 56, 84, 118, 136, createImpact(38, 150, 20, 0.0032)),
             heavy: createAttack("Absolute Line", accent, "thrust", "lunge", "melee", 25 + phaseTwoPower, 174, 28, 88, 90, 130, 228, createImpact(70, 220, 32, 0.0042)),
+            signature: createAttack("Snowblind Feint", accent, "thrust", "lunge", "melee", 18 + phaseTwoPower, 154, 24, 268, 48, 126, 154, createImpact(46, 166, 24, 0.0034)),
             counter: createAttack("Winter Reply", accent, "thrust", "lunge", "melee", 26 + phaseTwoPower, 160, 24, 52, 88, 118, 208, createImpact(64, 206, 30, 0.0038))
+          },
+          {
+            light: createAttack("Stillness Draw", accent, "thrust", "standard", "melee", 20 + phaseThreePower, 132, 28, 192, 54, 178, 154, createImpact(52, 186, 24, 0.004)),
+            heavy: createAttack("White Silence", accent, "thrust", "lunge", "melee", 31 + phaseThreePower, 186, 26, 286, 56, 204, 252, createImpact(88, 268, 40, 0.0052)),
+            signature: createAttack("Patient Cut", accent, "thrust", "lunge", "melee", 26 + phaseThreePower, 170, 24, 334, 52, 186, 226, createImpact(72, 230, 34, 0.0046)),
+            counter: createAttack("Last Winter", accent, "thrust", "lunge", "melee", 32 + phaseThreePower, 174, 24, 48, 76, 150, 222, createImpact(78, 244, 36, 0.0048))
           }
         ];
     }
@@ -755,6 +883,8 @@ export class BossEnemy {
     this.stunRemaining = Math.max(0, this.stunRemaining - deltaMs);
     this.slowRemaining = Math.max(0, this.slowRemaining - deltaMs);
     this.guardRemaining = Math.max(0, this.guardRemaining - deltaMs);
+    this.momentumRecoveryRemaining = Math.max(0, this.momentumRecoveryRemaining - deltaMs);
+    this.permafrostInitiativeRemaining = Math.max(0, this.permafrostInitiativeRemaining - deltaMs);
     this.postTeleportRecoveryRemaining = Math.max(0, this.postTeleportRecoveryRemaining - deltaMs);
     this.bleedRemaining = Math.max(0, this.bleedRemaining - deltaMs);
     this.bleedTickRemaining = Math.max(0, this.bleedTickRemaining - deltaMs);
@@ -762,9 +892,19 @@ export class BossEnemy {
     this.orbitBreakCooldownRemaining = Math.max(0, this.orbitBreakCooldownRemaining - deltaMs);
     this.orbitBreakWindowRemaining = Math.max(0, this.orbitBreakWindowRemaining - deltaMs);
 
+    if (this.definition.pool === "biome" && this.resolve > 0) {
+      this.resolveQuietRemaining += deltaMs;
+      const naturalDecay = (BOSS_TUNING.resolve.naturalDecayPerSecond * deltaMs) / 1000;
+      const neutralDecay =
+        this.resolveQuietRemaining >= BOSS_TUNING.resolve.neutralResetDelayMs
+          ? (BOSS_TUNING.resolve.neutralDecayPerSecond * deltaMs) / 1000
+          : 0;
+      this.resolve = Math.max(0, this.resolve - naturalDecay - neutralDecay);
+    }
+
     if (this.strideFlipRemaining === 0) {
       this.strideDirection *= -1;
-      this.strideFlipRemaining = this.currentPhaseIndex === 1 ? 420 + Phaser.Math.Between(0, 140) : 560 + Phaser.Math.Between(0, 180);
+      this.strideFlipRemaining = this.currentPhaseIndex > 0 ? 420 + Phaser.Math.Between(0, 140) : 560 + Phaser.Math.Between(0, 180);
     }
 
     if (this.phaseTransitionRemaining === 0 && this.bleedRemaining > 0 && this.bleedTickRemaining === 0) {
@@ -1103,7 +1243,8 @@ export class BossEnemy {
 
   private shouldAttack(distance: number, targetState: ArenaTargetState): boolean {
     const kit = this.getCurrentAttackKit();
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
+    const phaseThree = this.currentPhaseIndex >= 2;
 
     if (this.definition.id === "exalted" && this.guardRemaining > 320 && !phaseTwo) {
       return false;
@@ -1139,6 +1280,9 @@ export class BossEnemy {
       case "exalted":
         return phaseTwo ? distance <= kit.heavy.range * 0.82 : distance <= kit.light.range * 0.78;
       case "permafrost":
+        if (phaseThree && this.permafrostInitiativeRemaining <= 0 && distance <= kit.heavy.range * 1.08) {
+          return true;
+        }
         if (!targetState.isAttacking && !targetState.isDashing) {
           return distance >= kit.light.range * 0.88 && distance <= kit.heavy.range * 0.82;
         }
@@ -1155,10 +1299,14 @@ export class BossEnemy {
 
   private chooseAttack(distance: number, targetState: ArenaTargetState): { kind: AttackKind; profile: AttackProfile } {
     const kit = this.getCurrentAttackKit();
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
+    const phaseThree = this.currentPhaseIndex >= 2;
 
     switch (this.definition.id) {
       case "apex":
+        if (phaseThree && kit.signature && distance >= kit.light.range * 0.9 && distance <= kit.signature.range * 0.72 && !targetState.isParrying) {
+          return { kind: "heavy", profile: kit.signature };
+        }
         if (kit.signature && !targetState.isParrying && distance <= kit.heavy.range * (phaseTwo ? 0.76 : 0.72) && (targetState.isAttacking || distance <= kit.light.range * 0.84)) {
           return { kind: "heavy", profile: kit.signature };
         }
@@ -1182,6 +1330,12 @@ export class BossEnemy {
         }
         return { kind: "heavy", profile: distance >= kit.light.range * 0.84 ? kit.heavy : kit.light };
       case "honored":
+        if (phaseThree && kit.signature && targetState.isAttacking && distance >= kit.light.range * 0.62 && distance <= kit.heavy.range * 0.9 && Math.random() < 0.34) {
+          return { kind: "heavy", profile: kit.signature };
+        }
+        if (!phaseThree && phaseTwo && kit.signature && targetState.isAttacking && distance >= kit.light.range * 0.58 && distance <= kit.heavy.range * 0.88 && Math.random() < BOSS_TUNING.honored.feintChancePhase2) {
+          return { kind: "heavy", profile: kit.signature };
+        }
         if (targetState.isAttacking && kit.counter && distance >= kit.light.range * 0.56 && distance <= kit.heavy.range * 0.92 && Math.random() < (phaseTwo ? 0.72 : 0.52)) {
           return { kind: "heavy", profile: kit.counter };
         }
@@ -1199,6 +1353,12 @@ export class BossEnemy {
         }
         return { kind: distance <= kit.light.range * 0.64 && !phaseTwo ? "light" : "heavy", profile: distance <= kit.light.range * 0.64 && !phaseTwo ? kit.light : kit.heavy };
       case "permafrost":
+        if (phaseThree && kit.signature && this.permafrostInitiativeRemaining <= 0 && !targetState.isAttacking && !targetState.isDashing) {
+          return { kind: "heavy", profile: kit.signature };
+        }
+        if (!phaseThree && phaseTwo && kit.signature && !targetState.isAttacking && distance >= kit.light.range * 0.72 && distance <= kit.heavy.range * 0.86 && Math.random() < BOSS_TUNING.permafrost.phaseTwoFeintChance) {
+          return { kind: "heavy", profile: kit.signature };
+        }
         if ((targetState.isDashing || targetState.isAttacking) && kit.counter && distance >= kit.light.range * 0.64 && distance <= kit.heavy.range * 0.94) {
           return { kind: "heavy", profile: kit.counter };
         }
@@ -1243,12 +1403,41 @@ export class BossEnemy {
       return {};
     }
 
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
+    const phaseThree = this.currentPhaseIndex >= 2;
     const kit = this.getCurrentAttackKit();
     const orbitActive = this.isOrbitPressureActive();
 
     switch (this.definition.id) {
       case "apex":
+        if (phaseThree) {
+          if (this.specialCooldownRemaining <= 0 && kit.signature && distance >= 132 && distance <= 332) {
+            const origin = clampToArena(targetX - normalized.x * 340, targetY - normalized.y * 340, 64);
+            const crossingDirection = new Phaser.Math.Vector2(targetX - origin.x, targetY - origin.y).normalize();
+            this.specialCooldownRemaining = BOSS_TUNING.apex.crossingCooldownMs;
+            this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, 260);
+            this.teleportToDestination(origin.x, origin.y);
+            this.startAttack("heavy", kit.signature, crossingDirection);
+            return {
+              spawnedHazards: [
+                this.createCurrent(
+                  targetX + normalized.x * 72,
+                  targetY + normalized.y * 72,
+                  normalized,
+                  96,
+                  980,
+                  420,
+                  "The undertow reveals the crossing line."
+                )
+              ],
+              performedSpecial: true,
+              feedbackText: "The Apex vanishes beneath the tide.",
+              feedbackColor: this.definition.edge
+            };
+          }
+          return {};
+        }
+
         if (orbitActive && this.arenaCooldownRemaining <= 0 && distance >= 110 && distance <= 260) {
           const futurePoint = this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? 72 : 58, phaseTwo ? 18 : 10);
           const tangent = this.getOrbitTangent(normalized);
@@ -1258,16 +1447,14 @@ export class BossEnemy {
           this.consumeOrbitPressure(1120);
           return {
             spawnedHazards: [
-              this.createHazard(futurePoint.x, futurePoint.y, "snarePatch", phaseTwo ? 38 : 34, phaseTwo ? 4200 : 3600, phaseTwo ? 7 : 5, 300, 0x4aa8c1, "The undertow closes your escape."),
-              this.createHazard(
-                futurePoint.x + tangent.x * (phaseTwo ? 42 : 28),
-                futurePoint.y + tangent.y * (phaseTwo ? 42 : 28),
-                "snarePatch",
+              this.createCurrent(futurePoint.x, futurePoint.y, normalized, phaseTwo ? 44 : 38, BOSS_TUNING.apex.currentDurationMs[phaseTwo ? 1 : 0], phaseTwo ? 310 : 250, "The undertow closes your escape."),
+              this.createCurrent(
+                futurePoint.x + tangent.x * (phaseTwo ? 88 : 68),
+                futurePoint.y + tangent.y * (phaseTwo ? 88 : 68),
+                tangent,
                 phaseTwo ? 34 : 30,
-                phaseTwo ? 3600 : 3000,
-                phaseTwo ? 6 : 5,
-                260,
-                0x4aa8c1,
+                Math.max(1800, BOSS_TUNING.apex.currentDurationMs[phaseTwo ? 1 : 0] - 400),
+                phaseTwo ? 280 : 230,
                 "The tide herds you back in front."
               )
             ],
@@ -1298,12 +1485,12 @@ export class BossEnemy {
           this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 240 : 300);
           const centerX = targetX - normalized.x * 18;
           const centerY = targetY - normalized.y * 18;
-          const offset = phaseTwo ? 42 : 0;
+          const offset = phaseTwo ? 84 : 0;
           return {
             spawnedHazards: [
-              this.createHazard(centerX, centerY, "snarePatch", phaseTwo ? 38 : 34, phaseTwo ? 4200 : 3600, phaseTwo ? 7 : 5, 300, 0x4aa8c1, "Undertow catches your feet"),
+              this.createCurrent(centerX, centerY, normalized, phaseTwo ? 42 : 36, BOSS_TUNING.apex.currentDurationMs[phaseTwo ? 1 : 0], phaseTwo ? 300 : 240, "Undertow catches your feet"),
               ...(phaseTwo
-                ? [this.createHazard(centerX + normalized.y * offset, centerY - normalized.x * offset, "snarePatch", 34, 3600, 6, 260, 0x4aa8c1, "The tide closes around you")]
+                ? [this.createCurrent(centerX + normalized.y * offset, centerY - normalized.x * offset, new Phaser.Math.Vector2(-normalized.y, normalized.x), 34, 2400, 270, "The tide closes around you")]
                 : [])
             ],
             performedSpecial: true,
@@ -1319,57 +1506,20 @@ export class BossEnemy {
         }
         return {};
       case "enflamed":
-        if (orbitActive && this.specialCooldownRemaining <= 0) {
-          const landing = this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? 94 : 82, phaseTwo ? 32 : 24, 56);
-          const trailPoint = this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? -44 : -36, phaseTwo ? -10 : -6, 52);
-          this.specialCooldownRemaining = phaseTwo ? 3200 : 4300;
-          this.arenaCooldownRemaining = phaseTwo ? 3200 : 3900;
-          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 240 : 320);
-          this.guardRemaining = phaseTwo ? 220 : 140;
-          this.postTeleportRecoveryRemaining = this.getTeleportRecoveryDurationMs();
-          this.enflamedDiveReady = true;
-          this.teleportToDestination(landing.x, landing.y);
-          this.consumeOrbitPressure(1040);
-          return {
-            spawnedHazards: [
-              this.createHazard(
-                trailPoint.x,
-                trailPoint.y,
-                "bearTrap",
-                phaseTwo ? 36 : 30,
-                phaseTwo ? 3400 : 2800,
-                phaseTwo ? 8 : 6,
-                phaseTwo ? 360 : 300,
-                0xf0844f,
-                "Fire seals the path you were taking."
-              )
-            ],
-            performedSpecial: true,
-            feedbackText: "White fire leaps ahead of the orbit.",
-            feedbackColor: this.definition.edge
-          };
-        }
-
         if (
           this.specialCooldownRemaining <= 0 &&
-          (distance <= kit.heavy.range * 0.66 || ((targetState.isAttacking || targetState.isDashing) && distance <= kit.heavy.range * 0.82))
+          (orbitActive || distance <= kit.heavy.range * 0.66 || ((targetState.isAttacking || targetState.isDashing) && distance <= kit.heavy.range * 0.82))
         ) {
-          const landing = this.getEnflamedTeleportDestination(targetX, targetY, phaseTwo);
-          this.specialCooldownRemaining = phaseTwo ? 3400 : 4500;
-          this.arenaCooldownRemaining = phaseTwo ? 3300 : 4100;
-          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 260 : 340);
-          this.guardRemaining = phaseTwo ? 220 : 140;
-          this.postTeleportRecoveryRemaining = this.getTeleportRecoveryDurationMs();
-          this.enflamedDiveReady = true;
-          this.teleportToDestination(landing.x, landing.y);
-          return {
-            spawnedHazards: [
-              this.createHazard(this.x, this.y, "bearTrap", phaseTwo ? 36 : 30, phaseTwo ? 3400 : 2800, phaseTwo ? 8 : 6, phaseTwo ? 360 : 300, 0xf0844f, "Flame washes through the floor")
-            ],
-            performedSpecial: true,
-            feedbackText: landing.cueText,
-            feedbackColor: this.definition.edge
-          };
+          const landing = orbitActive
+            ? this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? 94 : 82, phaseTwo ? 32 : 24, 56)
+            : this.getEnflamedTeleportDestination(targetX, targetY, phaseTwo);
+          this.specialCooldownRemaining = phaseThree ? 3800 : phaseTwo ? 3400 : 4500;
+          this.arenaCooldownRemaining = phaseThree ? 3400 : phaseTwo ? 3300 : 4100;
+          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseThree ? 280 : phaseTwo ? 260 : 340);
+          if (orbitActive) {
+            this.consumeOrbitPressure(1040);
+          }
+          return this.beginEnflamedPrediction(landing, targetX, targetY, phaseThree, phaseTwo);
         }
         return {};
       case "honored":
@@ -1423,15 +1573,14 @@ export class BossEnemy {
           };
         }
 
-        if (this.specialCooldownRemaining <= 0 && kit.signature && distance >= kit.heavy.range * (phaseTwo ? 1.16 : 1.24) && distance <= kit.signature.range * 0.98) {
-          this.specialCooldownRemaining = phaseTwo ? 4200 : 5200;
-          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 420 : 520);
-          this.bodyObject.body.setVelocity(0, 0);
-          this.startAttack("heavy", kit.signature);
-          this.bodyObject.body.setAcceleration(0, 0);
+        if (this.specialCooldownRemaining <= 0 && distance >= kit.heavy.range * BOSS_TUNING.honored.retreatReclaimDistanceMultiplier) {
+          this.specialCooldownRemaining = phaseThree ? 2000 : phaseTwo ? 2400 : 3000;
+          this.guardRemaining = phaseThree ? 300 : phaseTwo ? 460 : 360;
+          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseThree ? 140 : phaseTwo ? 180 : 240);
+          this.bodyObject.body.setVelocity(normalized.x * (phaseThree ? 146 : phaseTwo ? 126 : 104), normalized.y * (phaseThree ? 146 : phaseTwo ? 126 : 104));
           return {
             performedSpecial: true,
-            feedbackText: "The Honored levels a crossbow.",
+            feedbackText: "The Honored calmly reclaims measure.",
             feedbackColor: this.definition.edge
           };
         }
@@ -1462,7 +1611,7 @@ export class BossEnemy {
         }
         return {};
       case "exalted":
-        if (orbitActive && this.arenaCooldownRemaining <= 0) {
+        if (!phaseThree && orbitActive && this.arenaCooldownRemaining <= 0) {
           const futurePoint = this.getOrbitFuturePoint(targetX, targetY, normalized, phaseTwo ? 74 : 58, phaseTwo ? 20 : 12, 58);
           const tangent = this.getOrbitTangent(normalized);
           const arenaCenter = new Phaser.Math.Vector2(ARENA.x + ARENA.width * 0.5 - this.x, ARENA.y + ARENA.height * 0.5 - this.y).normalize();
@@ -1505,20 +1654,20 @@ export class BossEnemy {
         }
 
         if (this.arenaCooldownRemaining <= 0) {
-          this.arenaCooldownRemaining = phaseTwo ? 2600 : 4300;
-          this.specialCooldownRemaining = Math.max(this.specialCooldownRemaining, phaseTwo ? 1320 : 1840);
-          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseTwo ? 220 : 280);
-          this.guardRemaining = phaseTwo ? 520 : 760;
+          this.arenaCooldownRemaining = phaseThree ? BOSS_TUNING.exalted.phaseThreeReconfigurationMs : phaseTwo ? 2600 : 4300;
+          this.specialCooldownRemaining = Math.max(this.specialCooldownRemaining, phaseThree ? 1240 : phaseTwo ? 1320 : 1840);
+          this.attackCooldownRemaining = Math.max(this.attackCooldownRemaining, phaseThree ? 190 : phaseTwo ? 220 : 280);
+          this.guardRemaining = phaseThree ? 420 : phaseTwo ? 520 : 760;
           return {
-            spawnedHazards: this.createExaltedHazards(phaseTwo),
+            spawnedHazards: this.createExaltedHazards(phaseTwo, phaseThree),
             performedSpecial: true,
-            feedbackText: phaseTwo ? "The hall seals into new lines." : "Runes realign across the floor.",
+            feedbackText: phaseThree ? "The board reveals its checkmate line." : phaseTwo ? "The hall seals into new lines." : "Runes realign across the floor.",
             feedbackColor: this.definition.edge
           };
         }
 
         if (phaseTwo && this.specialCooldownRemaining <= 0 && kit.signature) {
-          this.specialCooldownRemaining = 1800;
+          this.specialCooldownRemaining = phaseThree ? 1500 : 1800;
           this.startAttack("heavy", kit.signature);
           return { performedSpecial: true };
         }
@@ -1579,6 +1728,19 @@ export class BossEnemy {
         }
         return {};
       default:
+        if (this.definition.id === "permafrost" && phaseThree) {
+          if (this.specialCooldownRemaining <= 0 && this.permafrostInitiativeRemaining <= 0 && distance >= kit.light.range * 0.62 && distance <= kit.heavy.range * 1.04 && kit.signature) {
+            this.specialCooldownRemaining = 2600;
+            this.startAttack("heavy", kit.signature, normalized);
+            return {
+              performedSpecial: true,
+              feedbackText: "The Permafrost finally commits.",
+              feedbackColor: this.definition.edge
+            };
+          }
+          return {};
+        }
+
         if (
           orbitActive &&
           this.specialCooldownRemaining <= 0 &&
@@ -1660,9 +1822,43 @@ export class BossEnemy {
     }
   }
 
-  private createExaltedHazards(phaseTwo: boolean): EnemyHazardSignal[] {
+  private createExaltedHazards(phaseTwo: boolean, phaseThree = false): EnemyHazardSignal[] {
     const centerX = ARENA.x + ARENA.width * 0.5;
     const centerY = ARENA.y + ARENA.height * 0.5;
+    if (phaseThree) {
+      const checkmatePatterns = [
+        [
+          { x: centerX - 142, y: centerY, kind: "bearTrap" as const },
+          { x: centerX, y: centerY - 126, kind: "snarePatch" as const },
+          { x: centerX, y: centerY + 126, kind: "snarePatch" as const }
+        ],
+        [
+          { x: centerX + 142, y: centerY, kind: "bearTrap" as const },
+          { x: centerX - 122, y: centerY - 102, kind: "snarePatch" as const },
+          { x: centerX - 122, y: centerY + 102, kind: "snarePatch" as const }
+        ],
+        [
+          { x: centerX, y: centerY, kind: "bearTrap" as const },
+          { x: centerX - 148, y: centerY, kind: "snarePatch" as const },
+          { x: centerX + 148, y: centerY, kind: "snarePatch" as const }
+        ]
+      ] as const;
+      const pattern = checkmatePatterns[this.exaltedPatternIndex % checkmatePatterns.length] ?? checkmatePatterns[0];
+      this.exaltedPatternIndex += 1;
+      return pattern.map((entry, index) =>
+        this.createHazard(
+          entry.x,
+          entry.y,
+          entry.kind,
+          entry.kind === "bearTrap" ? 34 : 36,
+          entry.kind === "bearTrap" ? 3400 : 3800,
+          entry.kind === "bearTrap" ? 8 : 7,
+          entry.kind === "bearTrap" ? 320 : 280,
+          entry.kind === "bearTrap" ? 0x9cbce0 : 0xc5dcf3,
+          index === 0 ? "The next board state is already visible." : "Plan two moves ahead."
+        )
+      );
+    }
     const patterns = [
       {
         traps: [
@@ -1798,13 +1994,163 @@ export class BossEnemy {
       x: position.x,
       y: position.y,
       radius,
-      armDelayMs: this.currentPhaseIndex === 1 ? 320 : 420,
+      armDelayMs: this.currentPhaseIndex > 0 ? 320 : 420,
       durationMs,
       damage: Math.max(1, damage - 1),
       controlLockMs: Math.max(160, controlLockMs - 36),
       tint,
       triggerText
     };
+  }
+
+  private createCurrent(
+    x: number,
+    y: number,
+    direction: Phaser.Math.Vector2,
+    radius: number,
+    durationMs: number,
+    strength: number,
+    triggerText: string
+  ): EnemyHazardSignal {
+    const normalized = direction.clone();
+    if (normalized.lengthSq() <= 0.001) {
+      normalized.set(1, 0);
+    } else {
+      normalized.normalize();
+    }
+
+    return {
+      ...this.createHazard(x, y, "currentZone", radius, durationMs, 1, 0, 0x4aa8c1, triggerText),
+      force: {
+        x: normalized.x,
+        y: normalized.y,
+        strength
+      }
+    };
+  }
+
+  private createPredictionSigil(
+    x: number,
+    y: number,
+    radius: number,
+    durationMs: number,
+    markerStyle: "real" | "decoy" | "line" | "dive"
+  ): EnemyHazardSignal {
+    const tint = markerStyle === "real" ? 0xffe0a6 : markerStyle === "line" ? 0xffc982 : markerStyle === "dive" ? 0xff9e72 : 0xa85b4e;
+    return {
+      ...this.createHazard(x, y, "predictionSigil", radius, durationMs, 1, 0, tint, ""),
+      markerStyle
+    };
+  }
+
+  private beginEnflamedPrediction(
+    destination: { x: number; y: number },
+    targetX: number,
+    targetY: number,
+    prophecy: boolean,
+    phaseTwo: boolean
+  ): EnemyUpdateResult {
+    const leadMs = BOSS_TUNING.enflamed.predictionLeadMs[prophecy ? 2 : phaseTwo ? 1 : 0];
+    const lanceDirection = new Phaser.Math.Vector2(targetX - destination.x, targetY - destination.y);
+    if (lanceDirection.lengthSq() <= 0.001) {
+      lanceDirection.set(this.facing.x, this.facing.y);
+    } else {
+      lanceDirection.normalize();
+    }
+    const diveDirection = lanceDirection.clone();
+    this.enflamedPrediction = {
+      stage: "arrival",
+      remaining: leadMs,
+      destination,
+      lanceDirection,
+      diveDirection
+    };
+
+    const lateral = new Phaser.Math.Vector2(-lanceDirection.y, lanceDirection.x);
+    const sigils: EnemyHazardSignal[] = [this.createPredictionSigil(destination.x, destination.y, prophecy ? 40 : 36, leadMs + 320, "real")];
+    if (phaseTwo) {
+      sigils.push(
+        this.createPredictionSigil(destination.x + lateral.x * 72, destination.y + lateral.y * 72, 28, leadMs + 280, "decoy"),
+        this.createPredictionSigil(destination.x - lateral.x * 72, destination.y - lateral.y * 72, 28, leadMs + 280, "decoy")
+      );
+    }
+    if (prophecy) {
+      sigils.push(
+        this.createPredictionSigil(destination.x + lanceDirection.x * 116, destination.y + lanceDirection.y * 116, 24, leadMs + 1180, "line"),
+        this.createPredictionSigil(targetX + lateral.x * 32, targetY + lateral.y * 32, 30, leadMs + 1500, "dive")
+      );
+    }
+
+    return {
+      spawnedHazards: sigils,
+      performedSpecial: true,
+      feedbackText: prophecy ? "Prophecy marks arrival, lance, then dive." : phaseTwo ? "Only the bright sigil is real." : "The bright sigil names the landing.",
+      feedbackColor: this.definition.edge
+    };
+  }
+
+  private updateEnflamedPrediction(deltaMs: number, targetX: number, targetY: number): EnemyUpdateResult | null {
+    const prediction = this.enflamedPrediction;
+    if (!prediction) {
+      return null;
+    }
+
+    prediction.remaining = Math.max(0, prediction.remaining - deltaMs);
+    if (prediction.stage === "arrival") {
+      if (prediction.remaining > 0) {
+        return {};
+      }
+
+      this.teleportToDestination(prediction.destination.x, prediction.destination.y);
+      this.guardRemaining = this.currentPhaseIndex >= 2 ? 180 : this.currentPhaseIndex > 0 ? 220 : 140;
+      this.postTeleportRecoveryRemaining = this.getTeleportRecoveryDurationMs();
+      this.enflamedDiveReady = true;
+      if (this.currentPhaseIndex < 2) {
+        this.enflamedPrediction = null;
+        return { feedbackText: "The Enflamed arrives where the sigil promised.", feedbackColor: this.definition.edge };
+      }
+
+      prediction.stage = "lance";
+      prediction.remaining = BOSS_TUNING.enflamed.prophecyLanceDelayMs;
+      prediction.lanceDirection = new Phaser.Math.Vector2(targetX - this.x, targetY - this.y);
+      if (prediction.lanceDirection.lengthSq() <= 0.001) {
+        prediction.lanceDirection.set(this.facing.x, this.facing.y);
+      } else {
+        prediction.lanceDirection.normalize();
+      }
+      return { feedbackText: "The second mark becomes a lance line.", feedbackColor: this.definition.edge };
+    }
+
+    if (prediction.stage === "lance") {
+      if (prediction.remaining > 0 || this.currentAttack) {
+        return {};
+      }
+
+      const lance = this.getCurrentAttackKit().heavy;
+      this.startAttack("heavy", lance, prediction.lanceDirection);
+      prediction.stage = "dive";
+      prediction.remaining = lance.windup + lance.active + lance.recovery + BOSS_TUNING.enflamed.prophecyDiveDelayMs;
+      prediction.diveDirection = new Phaser.Math.Vector2(targetX - this.x, targetY - this.y);
+      if (prediction.diveDirection.lengthSq() <= 0.001) {
+        prediction.diveDirection.set(this.facing.x, this.facing.y);
+      } else {
+        prediction.diveDirection.normalize();
+      }
+      return { feedbackText: "The prophecy tightens.", feedbackColor: this.definition.edge };
+    }
+
+    if (prediction.remaining > 0 || this.currentAttack) {
+      return {};
+    }
+
+    const dive = this.getCurrentAttackKit().signature;
+    this.enflamedPrediction = null;
+    if (dive) {
+      this.startAttack("heavy", dive, prediction.diveDirection);
+      return { feedbackText: "The final mark falls.", feedbackColor: this.definition.edge };
+    }
+
+    return {};
   }
 
   private getEnflamedTeleportDestination(targetX: number, targetY: number, phaseTwo: boolean): { x: number; y: number; cueText: string } {
@@ -1895,18 +2241,18 @@ export class BossEnemy {
     let controlLossScale = 0.86;
 
     if (this.definition.id === "enflamed") {
-      angleOffsets = this.currentPhaseIndex === 1 ? [-0.24, -0.08, 0.08, 0.24] : [-0.16, 0.16];
-      damageScale = this.currentPhaseIndex === 1 ? 0.72 : 0.66;
+      angleOffsets = this.currentPhaseIndex > 0 ? [-0.24, -0.08, 0.08, 0.24] : [-0.16, 0.16];
+      damageScale = this.currentPhaseIndex > 0 ? 0.72 : 0.66;
     } else if (this.definition.id === "skelecar") {
       const volleyAttack = signal.profile.name === "Bad Time Volley" || signal.profile.name === "Very Bad Time";
       angleOffsets = volleyAttack
-        ? this.currentPhaseIndex === 1
+        ? this.currentPhaseIndex > 0
           ? [-0.34, -0.18, -0.06, 0.06, 0.18, 0.34]
           : [-0.26, -0.1, 0.1, 0.26]
-        : this.currentPhaseIndex === 1
+        : this.currentPhaseIndex > 0
           ? [-0.2, 0.2]
           : [-0.14, 0.14];
-      damageScale = volleyAttack ? (this.currentPhaseIndex === 1 ? 0.54 : 0.58) : this.currentPhaseIndex === 1 ? 0.7 : 0.74;
+      damageScale = volleyAttack ? (this.currentPhaseIndex > 0 ? 0.54 : 0.58) : this.currentPhaseIndex > 0 ? 0.7 : 0.74;
       rangeScale = 0.9;
       widthScale = 0.86;
       displacementScale = 0.74;
@@ -1964,7 +2310,15 @@ export class BossEnemy {
       remaining: profile.windup
     };
 
+    if (this.definition.id === "permafrost" && this.currentPhaseIndex >= 2) {
+      this.permafrostInitiativeRemaining = BOSS_TUNING.permafrost.patienceInitiativeMs[2];
+    }
+
     this.bodyObject.body.setAcceleration(direction.x * this.acceleration * 0.14, direction.y * this.acceleration * 0.14);
+  }
+
+  isMomentumCharge(signal: AttackExecutionSignal): boolean {
+    return signal.profile.name.includes("Charge") || signal.profile.name === "Abyssal Crossing";
   }
 
   private updateMovement(distance: number, normalized: Phaser.Math.Vector2, targetState: ArenaTargetState): void {
@@ -1989,7 +2343,7 @@ export class BossEnemy {
     }
 
     const kit = this.getCurrentAttackKit();
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
     const orbit = new Phaser.Math.Vector2(-normalized.y * this.strideDirection, normalized.x * this.strideDirection);
     const desired = new Phaser.Math.Vector2();
     const orbitActive = this.isOrbitPressureActive();
@@ -2157,29 +2511,36 @@ export class BossEnemy {
     this.bodyObject.body.setAcceleration(desired.x * this.acceleration * movementScale, desired.y * this.acceleration * movementScale);
   }
 
-  private enterPhaseTwo(): void {
-    this.currentPhaseIndex = 1;
-    this.currentPhaseHp = this.phaseHp[1];
+  private enterNextPhase(): void {
+    this.currentPhaseIndex += 1;
+    this.currentPhaseHp = this.phaseHp[this.currentPhaseIndex] ?? this.phaseHp[this.phaseHp.length - 1] ?? 1;
     this.currentAttack = null;
     this.counterQueued = false;
     this.enflamedDiveReady = false;
+    this.enflamedPrediction = null;
     this.skelecarVolleyReady = false;
     this.postTeleportRecoveryRemaining = 0;
-    this.phaseTransitionRemaining = 1180;
+    this.momentumRecoveryRemaining = 0;
+    this.phaseTransitionRemaining = BOSS_TUNING.phaseTransitionMs;
+    this.permafrostInitiativeRemaining = this.definition.id === "permafrost"
+      ? BOSS_TUNING.permafrost.patienceInitiativeMs[Math.min(2, this.currentPhaseIndex) as 0 | 1 | 2] + this.phaseTransitionRemaining
+      : 0;
     this.attackCooldownRemaining = 240;
     this.specialCooldownRemaining = 0;
     this.arenaCooldownRemaining = 0;
     this.guardRemaining =
       this.definition.id === "exalted"
-        ? 980
+        ? this.currentPhaseIndex >= 2 ? 720 : 980
         : this.definition.id === "honored" || this.definition.id === "permafrost"
-          ? 620
+          ? this.currentPhaseIndex >= 2 ? 460 : 620
           : this.definition.id === "danu"
             ? 380
             : this.definition.id === "skelecar"
               ? 180
               : 460;
     this.stunRemaining = 0;
+    this.resolve = 0;
+    this.resolveQuietRemaining = 0;
     this.slowRemaining = 0;
     this.slowFactor = 1;
     this.bleedRemaining = 0;
@@ -2228,7 +2589,7 @@ export class BossEnemy {
   private syncPresentation(): void {
     const angle = Math.atan2(this.facing.y, this.facing.x);
     const perpendicular = new Phaser.Math.Vector2(-this.facing.y, this.facing.x);
-    const phaseTwo = this.currentPhaseIndex === 1;
+    const phaseTwo = this.currentPhaseIndex > 0;
     const currentProfile = this.currentAttack?.signal.profile;
     const windup = this.currentAttack?.phase === "windup";
     const active = this.currentAttack?.phase === "active";
@@ -2499,8 +2860,8 @@ export class BossEnemy {
     });
 
     if (this.currentPhaseHp === 0) {
-      if (this.currentPhaseIndex === 0) {
-        this.enterPhaseTwo();
+      if (this.currentPhaseIndex < this.phaseHp.length - 1) {
+        this.enterNextPhase();
         return false;
       }
 

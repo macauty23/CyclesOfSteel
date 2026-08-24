@@ -49,6 +49,7 @@ export interface EnemyUpdateResult {
 export interface EnemyCombatSnapshot {
   phase: "idle" | "windup" | "active" | "recovery";
   isStunned: boolean;
+  guardRemaining: number;
   slowRemaining: number;
 }
 
@@ -212,6 +213,7 @@ export class PlaceholderEnemy {
     return {
       phase: this.currentAttack?.phase ?? "idle",
       isStunned: this.stunRemaining > 0,
+      guardRemaining: this.guardRemaining,
       slowRemaining: this.slowRemaining
     };
   }

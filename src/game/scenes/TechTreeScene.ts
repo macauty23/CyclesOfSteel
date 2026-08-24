@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import { gameManager } from "../core/GameManager";
 import { SCENE_KEYS } from "../core/SceneKeys";
 import { formatMaterialInventory, formatShortMaterialCost } from "../data/materials";
-import type { WeaponTechNodeId } from "../core/types";
+import type { LegendarySwordId, WeaponTechNodeId } from "../core/types";
 import { WEAPON_TECH_TREE } from "../data/weaponTechTree";
 import {
   TUTORIAL_PROMPT_IDS,
@@ -62,9 +62,12 @@ export class TechTreeScene extends Phaser.Scene {
     this.bindShortcuts();
     this.centerCameraOnFocusedNode();
     this.refreshView();
-    if (gameManager.isExcaliburNodeRevealed() && !gameManager.isLegendarySwordUnlocked("excalibur")) {
-      this.time.delayedCall(120, () => this.revealExcaliburNode());
-    }
+    (["excalibur", "tizona", "colada"] as LegendarySwordId[]).forEach((swordId, index) => {
+      const ascension = gameManager.getLegendaryAscensionState(swordId);
+      if (ascension.revealed && !ascension.unlocked) {
+        this.time.delayedCall(120 + index * 100, () => this.revealLegendaryNode(swordId));
+      }
+    });
     this.maybeOpenTutorialOverlay();
   }
 
@@ -223,15 +226,16 @@ export class TechTreeScene extends Phaser.Scene {
   }
 
   private attemptUnlockTechNode(nodeId: WeaponTechNodeId): void {
-    if (nodeId === "longsword" && gameManager.isExcaliburNodeRevealed()) {
-      if (gameManager.isLegendarySwordUnlocked("excalibur")) {
-        gameManager.upgradeCurrentSwordToLegendary("excalibur");
-        this.feedbackText.setText("Excalibur equipped.");
-      } else if (gameManager.canAscendLongswordToExcalibur()) {
-        gameManager.ascendLongswordToExcalibur();
-        this.feedbackText.setText("Excalibur claimed.");
+    const legendarySwordId = gameManager.getLegendarySwordForTechNode(nodeId);
+    if (legendarySwordId && gameManager.getLegendaryAscensionState(legendarySwordId).revealed) {
+      if (gameManager.isLegendarySwordUnlocked(legendarySwordId)) {
+        gameManager.upgradeCurrentSwordToLegendary(legendarySwordId);
+        this.feedbackText.setText(`${gameManager.getSelectedSword().name} equipped.`);
+      } else if (gameManager.canAscendToLegendary(legendarySwordId)) {
+        gameManager.ascendToLegendary(legendarySwordId);
+        this.feedbackText.setText(`${gameManager.getSelectedSword().name} claimed.`);
       } else {
-        this.feedbackText.setText("Excalibur requirements are not complete.");
+        this.feedbackText.setText("Legendary requirements are not complete.");
       }
       this.refreshView();
       return;
@@ -268,8 +272,9 @@ export class TechTreeScene extends Phaser.Scene {
 
     if (gameManager.unlockWeaponTech(nodeId)) {
       this.feedbackText.setText(`${node.name} forged.`);
-      if (gameManager.isExcaliburNodeRevealed()) {
-        this.revealExcaliburNode();
+      const unlockedLegendaryId = gameManager.getLegendarySwordForTechNode(nodeId);
+      if (unlockedLegendaryId && gameManager.getLegendaryAscensionState(unlockedLegendaryId).revealed) {
+        this.revealLegendaryNode(unlockedLegendaryId);
       }
     } else {
       this.feedbackText.setText(`Need ${formatShortMaterialCost(node.cost)}.`);
@@ -288,10 +293,11 @@ export class TechTreeScene extends Phaser.Scene {
     const arcaneDebtActive = gameManager.hasOwnedRunModifier("arcaneDebt");
     const available = !unlocked && !blockingNode && prerequisitesMet;
     const affordable = available && gameManager.canAfford(focusedNode.cost);
-    const excalibur = gameManager.getExcaliburAscensionState();
-    const showingExcalibur = focusedNode.id === "longsword" && excalibur.revealed;
-    const status = showingExcalibur
-      ? excalibur.unlocked ? "Claimed" : "Unclaimed"
+    const legendarySwordId = gameManager.getLegendarySwordForTechNode(focusedNode.id);
+    const legendary = legendarySwordId ? gameManager.getLegendaryAscensionState(legendarySwordId) : null;
+    const showingLegendary = Boolean(legendarySwordId && legendary?.revealed);
+    const status = showingLegendary
+      ? legendary?.unlocked ? "Claimed" : "Unclaimed"
       : unlocked
       ? "Forged"
       : arcaneDebtActive
@@ -314,17 +320,21 @@ export class TechTreeScene extends Phaser.Scene {
       ].join("\n")
     );
 
-    this.detailTitleText.setText(showingExcalibur ? "Excalibur" : focusedNode.name);
+    this.detailTitleText.setText(showingLegendary && legendarySwordId ? gameManager.getSelectedSword().id === legendarySwordId ? gameManager.getSelectedSword().name : legendarySwordId[0].toUpperCase() + legendarySwordId.slice(1) : focusedNode.name);
     this.fitDetailTitle(this.detailTitleText, 284, 54);
     this.detailText.setY(346 + this.detailTitleText.height);
     this.detailText.setText(
       [
         status,
-        showingExcalibur
+        showingLegendary
           ? [
-              `Defeat The Honored: ${excalibur.honoredCleared ? "Complete" : "Required"}`,
-              `Blessed flawless streak: ${excalibur.flawlessStreak}/8`,
-              "The pinnacle of the Longsword path. A sacred blade that answers only flawless measure and unwavering resolve. The king and the kingdom are one; as your spirit rises, the land flourishes. Should you fall, so too shall a fraction of the realm."
+              `${legendary?.requirementLabel}: ${legendary?.ready || legendary?.unlocked ? "Complete" : "Required"}`,
+              `Boss trial: ${legendary?.bossCleared ? "Complete" : "Required"}`,
+              legendarySwordId === "excalibur"
+                ? "The pinnacle of the Longsword path. A sacred blade that answers only flawless measure and unwavering resolve."
+                : legendarySwordId === "tizona"
+                  ? "Needleblade ascends into a legendary thrust weapon whose clean offense feeds a temporary, scaling flame."
+                  : "Pappenheimer Rapier ascends into a legendary duel weapon that refuses one killing blow per encounter."
             ].filter(Boolean).join("\n")
           : [focusedNode.summary, focusedNode.detail].join("\n\n")
       ]
@@ -335,28 +345,27 @@ export class TechTreeScene extends Phaser.Scene {
     this.techTreeBoard.refresh();
   }
 
-  private revealExcaliburNode(): void {
-    const longsword = WEAPON_TECH_TREE.longsword;
-    const nodeCenterX = longsword.position.x;
-    const nodeCenterY = longsword.position.y + TECH_TREE_Y_OFFSET;
-    this.focusedTechNodeId = "longsword";
-    this.techTreeBoard.setFocusedNodeId("longsword");
+  private revealLegendaryNode(swordId: LegendarySwordId): void {
+    const legendaryNode = gameManager.getWeaponTechRoster().find((node) => gameManager.getLegendarySwordForTechNode(node.id) === swordId);
+    if (!legendaryNode) return;
+    const nodeCenterX = legendaryNode.position.x;
+    const nodeCenterY = legendaryNode.position.y + TECH_TREE_Y_OFFSET;
+    this.focusedTechNodeId = legendaryNode.id;
+    this.techTreeBoard.setFocusedNodeId(legendaryNode.id);
 
-    // MARKER - EXCALIBUR CENTERING
-    // DO NOT TOUCH ANYMORE, IT IS **PERFECT**.
     this.cameras.main.pan(1450, nodeCenterX, nodeCenterY, "Sine.easeInOut", true);
     this.cameras.main.once(Phaser.Cameras.Scene2D.Events.PAN_COMPLETE, () => {
-      // Snap to the same card-center coordinate after the tween to prevent residual camera drift.
       this.cameras.main.centerOn(nodeCenterX, nodeCenterY);
-      this.techTreeBoard.playExcaliburReveal();
-      this.spawnExcaliburEmbers();
+      this.techTreeBoard.playLegendaryReveal(legendaryNode.id);
+      this.spawnLegendaryEmbers(swordId);
     });
   }
-  private spawnExcaliburEmbers(): void {
+  private spawnLegendaryEmbers(swordId: LegendarySwordId): void {
+    const palette = swordId === "tizona" ? [0xe0542d, 0xffb05b] : swordId === "colada" ? [0xc9d9ef, 0xffedb1] : [0xd47b28, 0xffc06b];
     const spawn = (): void => {
-      if (!this.sys.isActive() || !gameManager.isExcaliburNodeRevealed()) return;
+      if (!this.sys.isActive() || !gameManager.getLegendaryAscensionState(swordId).revealed) return;
       const radius = Phaser.Math.Between(5, 22);
-      const orb = this.add.circle(Phaser.Math.Between(370, VIEWPORT.width - 20), VIEWPORT.height + radius, radius, Phaser.Math.Between(0xd47b28, 0xffc06b), Phaser.Math.FloatBetween(0.08, 0.24)).setScrollFactor(0).setDepth(2);
+      const orb = this.add.circle(Phaser.Math.Between(370, VIEWPORT.width - 20), VIEWPORT.height + radius, radius, Phaser.Math.RND.pick(palette), Phaser.Math.FloatBetween(0.08, 0.24)).setScrollFactor(0).setDepth(2);
       this.tweens.add({ targets: orb, y: -radius, x: orb.x + Phaser.Math.Between(-90, 90), alpha: 0, duration: Phaser.Math.Between(5000, 9000), ease: "Sine.easeInOut", onComplete: () => { orb.destroy(); spawn(); } });
     };
     for (let i = 0; i < 64; i += 1) this.time.delayedCall(i * 140, spawn);

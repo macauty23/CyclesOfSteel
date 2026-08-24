@@ -5,6 +5,8 @@ export type SwordId =
   | "warArmingSword"
   | "longsword"
   | "excalibur"
+  | "tizona"
+  | "colada"
   | "greatsword"
   | "zweihander"
   | "flamberge"
@@ -37,12 +39,25 @@ export type SwordId =
   | "hangerSword"
   | "navalCutlass"
   | "dusack"
+  | "steelDusack"
+  | "mastersDusack"
+  | "officersCutlass"
+  | "executionFalchion"
+  | "warFalchion"
   | "hauswehr"
   | "messer"
   | "kriegsmesser"
   | "grossesMesser"
   | "langesMesser"
-  | "twoHandedMesser";
+  | "twoHandedMesser"
+  | "heavyKriegsmesser"
+  | "executionMesser"
+  | "warMesser"
+  | "feldmesser"
+  | "landsknechtMesser"
+  | "fechtmesser"
+  | "longFechtmesser"
+  | "mastersMesser";
 export type AttackKind = "light" | "heavy";
 export type GuardType = "plow" | "day" | "ox" | "fool";
 export type BindFollowupType = "standard" | "defensive" | "offensive";
@@ -61,11 +76,13 @@ export type EnemySpecialId =
   | "rushdown"
   | "guardedShot"
   | "hexFervor";
-export type EnemyHazardKind = "bearTrap" | "snarePatch";
+export type EnemyHazardKind = "bearTrap" | "snarePatch" | "currentZone" | "predictionSigil";
 export type BiomeBossId = "apex" | "enflamed" | "honored" | "exalted" | "permafrost";
 export type SecretBossId = "skelecar" | "danu";
 export type BossId = BiomeBossId | SecretBossId;
 export type BossPoolId = "biome" | "secret";
+/** Normal biome bosses use three phases; legacy/secret bosses may retain two. */
+export type BossPhaseHp = [number, number] | [number, number, number];
 export type BossArenaThemeId = "coastal" | "volcanic" | "temperate" | "sacred" | "cold" | "secret";
 export type ForgeTab = "offers" | "modifiers" | "enchantments" | "trinkets";
 export type BuildCategoryId = "tempo" | "space" | "commitment" | "control" | "stamina";
@@ -143,7 +160,7 @@ export type RegionId =
   | "crystalValley"
   | "skyIslands";
 export type WorldNodeType = "battle" | "miniboss" | "boss" | "event" | "merchant" | "relic" | "challenge";
-export type LegendarySwordId = "excalibur";
+export type LegendarySwordId = "excalibur" | "tizona" | "colada";
 export type EliteTitleId = "swift" | "ironclad" | "duelist" | "frenzied" | "warden";
 export type ShrineChallengeId = "poisonVow" | "noDash" | "heavyOnly";
 export type ArenaEnvironmentId = "icePatches" | "lavaVents" | "fogBank" | "narrowCorridor";
@@ -209,12 +226,25 @@ export type WeaponTechNodeId =
   | "hangerSword"
   | "navalCutlass"
   | "dusack"
+  | "steelDusack"
+  | "mastersDusack"
+  | "officersCutlass"
+  | "executionFalchion"
+  | "warFalchion"
   | "hauswehr"
   | "messer"
   | "kriegsmesser"
   | "grossesMesser"
   | "langesMesser"
-  | "twoHandedMesser";
+  | "twoHandedMesser"
+  | "heavyKriegsmesser"
+  | "executionMesser"
+  | "warMesser"
+  | "feldmesser"
+  | "landsknechtMesser"
+  | "fechtmesser"
+  | "longFechtmesser"
+  | "mastersMesser";
 export type EnemyId = string;
 export type EnemyVisualStyle = "beast" | "raider" | "polearm" | "archer" | "caster" | "brute" | "guardian";
 export type ForgeOfferId =
@@ -374,6 +404,57 @@ export interface SwordTechniqueProfile {
   holyTrinityDamageMultiplier?: number;
   holyTrinityExplosionRadius?: number;
   holyTrinityExplosionDamage?: number;
+  rollingEdgeRecoveryScalePerHit?: number;
+  rollingEdgeMaxStacks?: number;
+  passingCutMoveMultiplier?: number;
+  passingCutMoveDurationMs?: number;
+  redirectionSweepRangeBonus?: number;
+  redirectionImpactMultiplier?: number;
+  redirectionWindowMs?: number;
+  pursuitMoveMultiplier?: number;
+  pursuitMoveDurationMs?: number;
+  boardingStepStaminaRefund?: number;
+  commandingEdgeEvery?: number;
+  commandingEdgeImpactMultiplier?: number;
+  commandingEdgeFlowBonus?: number;
+  headsmanDamageMultiplier?: number;
+  sunderingArmorPierceRatio?: number;
+  sunderingImpactMultiplier?: number;
+  sunderingGuardBreakStunMs?: number;
+  ruthlessTempoStaminaDiscount?: number;
+  noRespiteHeavyRecoveryScale?: number;
+  crushingFollowthroughImpactMultiplier?: number;
+  longReachFlowBonus?: number;
+  noQuarterOffensiveBindRefund?: number;
+  noQuarterNextHeavyDamageMultiplier?: number;
+  noQuarterWindowMs?: number;
+  brutalCommitmentMaxDamageBonus?: number;
+  sentenceDamageMultiplier?: number;
+  sentenceHitstopMs?: number;
+  forwardPressureRecoveryScale?: number;
+  campaignerFlowWindowMs?: number;
+  relentlessMoveStep?: number;
+  relentlessMaxStacks?: number;
+  relentlessDurationMs?: number;
+  countercutLightDamageMultiplier?: number;
+  countercutWindowMs?: number;
+  indesWindupScale?: number;
+  indesWindowMs?: number;
+  vorRecoveryScale?: number;
+  vorImpactMultiplier?: number;
+  vorWindowMs?: number;
+  tizonaFlameDurationMs?: number;
+  tizonaFlameBaseDamageBonus?: number;
+  tizonaFlameCleanHitDamageStep?: number;
+  tizonaFlameMaxCleanHitStacks?: number;
+  tizonaFlameFlowDamageBonus?: number;
+  tizonaFlameDominionDamageBonus?: number;
+  tizonaBurnBaseDamage?: number;
+  tizonaBurnCleanHitStep?: number;
+  tizonaBurnDurationMs?: number;
+  forceOfWillInvulnerabilityMs?: number;
+  forceOfWillMoveMultiplier?: number;
+  forceOfWillMoveDurationMs?: number;
 }
 
 export interface MaterialInventory {
@@ -531,7 +612,7 @@ export interface BossDefinition {
   fill: number;
   edge: number;
   armor: EnemyArmorTier;
-  phaseHp: [number, number];
+  phaseHp: BossPhaseHp;
   speed: number;
   acceleration: number;
   aggression: number;
@@ -576,6 +657,13 @@ export interface EnemyHazardSignal {
   controlLockMs: number;
   tint: number;
   triggerText: string;
+  /** Current zones push continuously; prediction sigils are deliberately harmless. */
+  force?: {
+    x: number;
+    y: number;
+    strength: number;
+  };
+  markerStyle?: "real" | "decoy" | "line" | "dive";
 }
 
 export interface EnemyUpdateResult {
@@ -591,6 +679,7 @@ export interface EnemyUpdateResult {
 export interface EnemyCombatSnapshot {
   phase: "idle" | "windup" | "active" | "recovery";
   isStunned: boolean;
+  guardRemaining: number;
   slowRemaining: number;
 }
 
@@ -779,7 +868,7 @@ export interface EncounterConfig {
   bossLesson?: string;
   bossCoreRule?: string;
   bossRewardRelicId?: RelicId;
-  bossPhaseHp?: [number, number];
+  bossPhaseHp?: BossPhaseHp;
   rewardRelicId?: RelicId;
   eliteTitleId?: EliteTitleId;
   eliteTitleName?: string;
@@ -836,6 +925,8 @@ export interface AttackExecutionSignal {
   };
   angle: number;
   guardEmpowerment?: GuardAttackEmpowerment;
+  weaponTechniqueProc?: "commandingEdge" | "sentence" | "sundering" | "vor";
+  committedStamina?: number;
 }
 
 export interface CombatStatusSnapshot {
